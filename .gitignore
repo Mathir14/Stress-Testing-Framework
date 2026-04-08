@@ -10,6 +10,7 @@ __pycache__/
 
 # Runtime artifacts
 saved_models/
+figures/
 
 # Office documents and temp files
 *.docx
