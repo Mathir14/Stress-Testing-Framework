@@ -21,6 +21,7 @@ diagram-export-*.png
 
 # Paper drafting scripts (not part of deployable framework)
 fill_paper.py
+generate_figures.py
 fix_*.py
 format_paper.py
 humanise*.py
