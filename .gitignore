@@ -11,6 +11,7 @@ __pycache__/
 # Runtime artifacts
 saved_models/
 figures/
+synthetic_mobile_sales_2025.csv
 
 # Office documents and temp files
 *.docx
@@ -22,6 +23,7 @@ diagram-export-*.png
 # Paper drafting scripts (not part of deployable framework)
 fill_paper.py
 generate_figures.py
+run_pipeline.py
 fix_*.py
 format_paper.py
 humanise*.py

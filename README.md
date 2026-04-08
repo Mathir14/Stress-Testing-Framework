@@ -48,14 +48,6 @@ streamlit run app.py
 
 Open the URL shown by Streamlit (usually http://localhost:8501).
 
-### 3) Optional: run pipeline script
-
-```bash
-python run_pipeline.py
-```
-
-This script runs the pipeline on `synthetic_mobile_sales_2025.csv`.
-
 ## Recommended Workflow
 
 1. Use Module 1 to prepare data.
@@ -73,9 +65,7 @@ This script runs the pipeline on `synthetic_mobile_sales_2025.csv`.
 ```text
 Mini Project/
 |- app.py
-|- run_pipeline.py
 |- requirements.txt
-|- synthetic_mobile_sales_2025.csv
 |- modules/
 |  |- data_module.py
 |  |- model_module.py
@@ -97,6 +87,7 @@ Generated/testing artifacts are intentionally excluded from version control:
 
 - `saved_models/` (trained model binaries)
 - `figures/` (paper/testing output images)
+- personal/local datasets (for example `synthetic_mobile_sales_2025.csv`)
 - paper-specific helper scripts and document files
 
 These are controlled via `.gitignore`.
