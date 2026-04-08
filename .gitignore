@@ -1,0 +1,30 @@
+# Python cache and virtual environment
+.venv/
+__pycache__/
+*.py[cod]
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Runtime artifacts
+saved_models/
+
+# Office documents and temp files
+*.docx
+~$*.docx
+
+# Local exports not part of framework code
+diagram-export-*.png
+
+# Paper drafting scripts (not part of deployable framework)
+fill_paper.py
+fix_*.py
+format_paper.py
+humanise*.py
+relocate_figures.py
+
+# OS noise
+.DS_Store
+Thumbs.db
