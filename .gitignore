@@ -32,3 +32,7 @@ relocate_figures.py
 # OS noise
 .DS_Store
 Thumbs.db
+
+# Forge runtime data
+.forge/runs/
+.forge/cache/
