@@ -1,0 +1,397 @@
+{
+  "cases": {
+    "all_components": {
+      "available_components": [
+        "Performance",
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "calibration": 22.5,
+      "colour": "#8BC34A",
+      "confidence": 19.375,
+      "grade": "A",
+      "missing_components": [],
+      "performance": 21.0,
+      "robustness": 20.0,
+      "total": 82.88
+    },
+    "all_components__nc3": {
+      "available_components": [
+        "Performance",
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "calibration": 22.5,
+      "colour": "#8BC34A",
+      "confidence": 21.22,
+      "grade": "A",
+      "missing_components": [],
+      "performance": 21.0,
+      "robustness": 20.0,
+      "total": 84.72
+    },
+    "all_components__nc5": {
+      "available_components": [
+        "Performance",
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "calibration": 22.5,
+      "colour": "#8BC34A",
+      "confidence": 22.222,
+      "grade": "A",
+      "missing_components": [],
+      "performance": 21.0,
+      "robustness": 20.0,
+      "total": 85.72
+    },
+    "confidence_only": {
+      "available_components": [],
+      "calibration": 12.5,
+      "colour": "#FF5722",
+      "confidence": 12.5,
+      "grade": "D",
+      "missing_components": [
+        "Performance",
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "performance": 12.5,
+      "robustness": 12.5,
+      "total": 50.0
+    },
+    "confidence_only__nc3": {
+      "available_components": [],
+      "calibration": 12.5,
+      "colour": "#FF5722",
+      "confidence": 12.5,
+      "grade": "D",
+      "missing_components": [
+        "Performance",
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "performance": 12.5,
+      "robustness": 12.5,
+      "total": 50.0
+    },
+    "confidence_only__nc5": {
+      "available_components": [],
+      "calibration": 12.5,
+      "colour": "#FF5722",
+      "confidence": 12.5,
+      "grade": "D",
+      "missing_components": [
+        "Performance",
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "performance": 12.5,
+      "robustness": 12.5,
+      "total": 50.0
+    },
+    "missing_all": {
+      "available_components": [],
+      "calibration": 12.5,
+      "colour": "#FF5722",
+      "confidence": 12.5,
+      "grade": "D",
+      "missing_components": [
+        "Performance",
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "performance": 12.5,
+      "robustness": 12.5,
+      "total": 50.0
+    },
+    "missing_all__nc3": {
+      "available_components": [],
+      "calibration": 12.5,
+      "colour": "#FF5722",
+      "confidence": 12.5,
+      "grade": "D",
+      "missing_components": [
+        "Performance",
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "performance": 12.5,
+      "robustness": 12.5,
+      "total": 50.0
+    },
+    "missing_all__nc5": {
+      "available_components": [],
+      "calibration": 12.5,
+      "colour": "#FF5722",
+      "confidence": 12.5,
+      "grade": "D",
+      "missing_components": [
+        "Performance",
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "performance": 12.5,
+      "robustness": 12.5,
+      "total": 50.0
+    },
+    "partial": {
+      "available_components": [],
+      "calibration": 12.5,
+      "colour": "#FF5722",
+      "confidence": 12.5,
+      "grade": "D",
+      "missing_components": [
+        "Performance",
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "performance": 12.5,
+      "robustness": 12.5,
+      "total": 50.0
+    },
+    "partial__nc3": {
+      "available_components": [],
+      "calibration": 12.5,
+      "colour": "#FF5722",
+      "confidence": 12.5,
+      "grade": "D",
+      "missing_components": [
+        "Performance",
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "performance": 12.5,
+      "robustness": 12.5,
+      "total": 50.0
+    },
+    "partial__nc5": {
+      "available_components": [],
+      "calibration": 12.5,
+      "colour": "#FF5722",
+      "confidence": 12.5,
+      "grade": "D",
+      "missing_components": [
+        "Performance",
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "performance": 12.5,
+      "robustness": 12.5,
+      "total": 50.0
+    },
+    "perfect": {
+      "available_components": [
+        "Performance",
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "calibration": 25.0,
+      "colour": "#4CAF50",
+      "confidence": 25.0,
+      "grade": "A+",
+      "missing_components": [],
+      "performance": 25.0,
+      "robustness": 25.0,
+      "total": 100.0
+    },
+    "perfect__nc3": {
+      "available_components": [
+        "Performance",
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "calibration": 25.0,
+      "colour": "#4CAF50",
+      "confidence": 25.0,
+      "grade": "A+",
+      "missing_components": [],
+      "performance": 25.0,
+      "robustness": 25.0,
+      "total": 100.0
+    },
+    "perfect__nc5": {
+      "available_components": [
+        "Performance",
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "calibration": 25.0,
+      "colour": "#4CAF50",
+      "confidence": 25.0,
+      "grade": "A+",
+      "missing_components": [],
+      "performance": 25.0,
+      "robustness": 25.0,
+      "total": 100.0
+    },
+    "worst": {
+      "available_components": [
+        "Performance",
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "calibration": 0.0,
+      "colour": "#C0392B",
+      "confidence": 0.0,
+      "grade": "F",
+      "missing_components": [],
+      "performance": 0.0,
+      "robustness": 0.0,
+      "total": 0.0
+    },
+    "worst__nc3": {
+      "available_components": [
+        "Performance",
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "calibration": 0.0,
+      "colour": "#C0392B",
+      "confidence": 0.0,
+      "grade": "F",
+      "missing_components": [],
+      "performance": 0.0,
+      "robustness": 0.0,
+      "total": 0.0
+    },
+    "worst__nc5": {
+      "available_components": [
+        "Performance",
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "calibration": 0.0,
+      "colour": "#C0392B",
+      "confidence": 0.0,
+      "grade": "F",
+      "missing_components": [],
+      "performance": 0.0,
+      "robustness": 0.0,
+      "total": 0.0
+    },
+    "zero_performance": {
+      "available_components": [
+        "Performance"
+      ],
+      "calibration": 12.5,
+      "colour": "#C0392B",
+      "confidence": 12.5,
+      "grade": "F",
+      "missing_components": [
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "performance": 0.0,
+      "robustness": 12.5,
+      "total": 37.5
+    },
+    "zero_performance__nc3": {
+      "available_components": [
+        "Performance"
+      ],
+      "calibration": 12.5,
+      "colour": "#C0392B",
+      "confidence": 12.5,
+      "grade": "F",
+      "missing_components": [
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "performance": 0.0,
+      "robustness": 12.5,
+      "total": 37.5
+    },
+    "zero_performance__nc5": {
+      "available_components": [
+        "Performance"
+      ],
+      "calibration": 12.5,
+      "colour": "#C0392B",
+      "confidence": 12.5,
+      "grade": "F",
+      "missing_components": [
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "performance": 0.0,
+      "robustness": 12.5,
+      "total": 37.5
+    }
+  },
+  "grade_colours": {
+    "-10.0": "#C0392B",
+    "0.0": "#C0392B",
+    "100.0": "#4CAF50",
+    "25.0": "#C0392B",
+    "49.999": "#C0392B",
+    "50.0": "#FF5722",
+    "55.0": "#FF5722",
+    "59.999": "#FF5722",
+    "60.0": "#FF9800",
+    "65.0": "#FF9800",
+    "69.999": "#FF9800",
+    "70.0": "#FFEB3B",
+    "75.0": "#FFEB3B",
+    "79.999": "#FFEB3B",
+    "80.0": "#8BC34A",
+    "85.0": "#8BC34A",
+    "89.999": "#8BC34A",
+    "90.0": "#4CAF50",
+    "95.0": "#4CAF50"
+  },
+  "grades": {
+    "-10.0": "F",
+    "0.0": "F",
+    "100.0": "A+",
+    "25.0": "F",
+    "49.999": "F",
+    "50.0": "D",
+    "55.0": "D",
+    "59.999": "D",
+    "60.0": "C",
+    "65.0": "C",
+    "69.999": "C",
+    "70.0": "B",
+    "75.0": "B",
+    "79.999": "B",
+    "80.0": "A",
+    "85.0": "A",
+    "89.999": "A",
+    "90.0": "A+",
+    "95.0": "A+"
+  },
+  "interpreter": {
+    "platform": "linux",
+    "python_implementation": "CPython",
+    "python_version": "3.14.7"
+  },
+  "maxima": {
+    "MAX_CAL": 25.0,
+    "MAX_CONF": 25.0,
+    "MAX_PERF": 25.0,
+    "MAX_ROB": 25.0
+  },
+  "schema_version": 1
+}

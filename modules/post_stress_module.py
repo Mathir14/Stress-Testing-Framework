@@ -3,13 +3,13 @@ Post-Stress Evaluation Module
 Deep analysis of stress test results to assess model robustness
 """
 
-from typing import Dict, List, Optional, Tuple
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
-import streamlit as st
 
 
 class PostStressAnalyzer:
@@ -17,13 +17,13 @@ class PostStressAnalyzer:
     Analyzes stress test results to provide comprehensive robustness insights
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.stress_results = {}
         self.robustness_scores = {}
 
     def add_stress_result(
-        self, test_name: str, result: Dict, model_name: str = "default"
-    ):
+        self, test_name: str, result: Dict[str, Any], model_name: str = "default"
+    ) -> None:
         """
         Store a stress test result for analysis
 
@@ -37,7 +37,9 @@ class PostStressAnalyzer:
 
         self.stress_results[model_name][test_name] = result
 
-    def add_batch_results(self, results: Dict, model_name: str = "default"):
+    def add_batch_results(
+        self, results: Dict[str, Any], model_name: str = "default"
+    ) -> None:
         """
         Store batch stress test results
 
@@ -217,7 +219,7 @@ class PostStressAnalyzer:
 
         return pd.DataFrame(category_stats)
 
-    def plot_robustness_radar(self, model_name: str = "default"):
+    def plot_robustness_radar(self, model_name: str = "default") -> go.Figure | None:
         """
         Create radar chart showing robustness across dimensions
 
@@ -268,7 +270,9 @@ class PostStressAnalyzer:
 
         return fig
 
-    def plot_vulnerability_heatmap(self, model_name: str = "default"):
+    def plot_vulnerability_heatmap(
+        self, model_name: str = "default"
+    ) -> go.Figure | None:
         """
         Create heatmap showing vulnerability across stress tests
 
@@ -311,7 +315,9 @@ class PostStressAnalyzer:
 
         return fig
 
-    def compare_model_robustness(self, model_names: List[str] = None):
+    def compare_model_robustness(
+        self, model_names: List[str] = None
+    ) -> go.Figure | None:
         """
         Compare robustness across multiple models
 

@@ -11,9 +11,13 @@ Score breakdown (each component 0–25 pts, total 0–100):
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+
+from core.config import ReliabilityWeights, get_config
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Grade helpers
@@ -21,19 +25,19 @@ import plotly.graph_objects as go
 
 
 def _grade(score: float) -> tuple[str, str]:
-    """Return (letter_grade, colour_hex) for a 0-100 score."""
-    if score >= 90:
-        return "A+", "#2ECC71"
-    elif score >= 80:
-        return "A", "#27AE60"
-    elif score >= 70:
-        return "B", "#F39C12"
-    elif score >= 60:
-        return "C", "#E67E22"
-    elif score >= 50:
-        return "D", "#E74C3C"
-    else:
-        return "F", "#C0392B"
+    """Return (letter_grade, colour_hex) for a 0-100 score.
+
+    The cutoffs and colours live in :class:`core.config.ReliabilityWeights`
+    (architecture.md §4.2, ADR-005) so the scoring policy has a single owner.
+    This module-level function resolves against the process-wide configuration;
+    :meth:`ReliabilityScorer._grade` is the instance-scoped equivalent for a
+    scorer built with injected weights.
+    """
+    return get_config().reliability.resolve_grade(score)
+
+
+#: The configured default maxima, used for the class-level mirror below.
+_DEFAULT_WEIGHTS = ReliabilityWeights()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -44,11 +48,33 @@ def _grade(score: float) -> tuple[str, str]:
 class ReliabilityScorer:
     """Compute and display unified reliability scores for trained models."""
 
-    # Maximum points per component
-    MAX_PERF = 25.0
-    MAX_CAL = 25.0
-    MAX_ROB = 25.0
-    MAX_CONF = 25.0
+    # Maximum points per component.  Class-level mirror of the configured
+    # defaults, kept so that ``ReliabilityScorer.MAX_PERF`` still resolves for
+    # class-level readers; ``__init__`` re-binds these per instance from the
+    # active configuration so an injected ``weights`` is honoured.
+    MAX_PERF = _DEFAULT_WEIGHTS.max_perf
+    MAX_CAL = _DEFAULT_WEIGHTS.max_cal
+    MAX_ROB = _DEFAULT_WEIGHTS.max_rob
+    MAX_CONF = _DEFAULT_WEIGHTS.max_conf
+
+    def __init__(self, weights: ReliabilityWeights | None = None) -> None:
+        """Bind the scoring policy.
+
+        Args:
+            weights: Policy to score against.  ``None`` (the default) uses the
+                process-wide configuration singleton, which is what every view
+                does — ``ReliabilityScorer()`` is the only construction the app
+                performs.
+        """
+        self.weights = get_config().reliability if weights is None else weights
+        self.MAX_PERF = self.weights.max_perf
+        self.MAX_CAL = self.weights.max_cal
+        self.MAX_ROB = self.weights.max_rob
+        self.MAX_CONF = self.weights.max_conf
+
+    def _grade(self, score: float) -> tuple[str, str]:
+        """Grade against this scorer's own policy, not the global singleton."""
+        return self.weights.resolve_grade(score)
 
     # ── Component calculators ────────────────────────────────────────────────
 
@@ -60,19 +86,19 @@ class ReliabilityScorer:
         """
         0–25 pts.
         ECE = 0   → 25 pts  (perfect)
-        ECE = 0.5 → 0  pts  (terrible)
+        ECE = ece_cap → 0  pts  (terrible)
         Linear interpolation, clipped.
         """
-        pts = max(0.0, (1.0 - ece / 0.5)) * self.MAX_CAL
+        pts = max(0.0, (1.0 - ece / self.weights.ece_cap)) * self.MAX_CAL
         return round(pts, 3)
 
     def _robustness_score(self, avg_drop: float) -> float:
         """
         0–25 pts.
         avg_drop is the mean performance_drop fraction (0–1).
-        0 drop → 25 pts,  ≥ 0.5 drop → 0 pts.
+        0 drop → 25 pts,  ≥ drop_cap → 0 pts.
         """
-        pts = max(0.0, (1.0 - avg_drop / 0.5)) * self.MAX_ROB
+        pts = max(0.0, (1.0 - avg_drop / self.weights.drop_cap)) * self.MAX_ROB
         return round(pts, 3)
 
     def _confidence_score(
@@ -162,7 +188,7 @@ class ReliabilityScorer:
             missing.append("Confidence")
 
         total = round(perf_pts + cal_pts + rob_pts + conf_pts, 2)
-        grade, colour = _grade(total)
+        grade, colour = self._grade(total)
 
         return {
             "model_name": model_name,
@@ -187,7 +213,7 @@ class ReliabilityScorer:
 
     def score_all_models(
         self,
-        model_trainer,
+        model_trainer: Any,
         *,
         dataset_name: str = "Test",
         stress_results: dict | None = None,
@@ -334,7 +360,7 @@ class ReliabilityScorer:
         colors = ["#4C78A8", "#72B7B2", "#F58518", "#54A24B"]
 
         fig = go.Figure()
-        for comp, label, color in zip(components, labels, colors):
+        for comp, label, color in zip(components, labels, colors, strict=True):
             fig.add_trace(
                 go.Bar(
                     name=label,
@@ -372,7 +398,7 @@ class ReliabilityScorer:
                 x=models,
                 y=totals,
                 marker_color=colours,
-                text=[f"{t:.1f}  ({g})" for t, g in zip(totals, grades)],
+                text=[f"{t:.1f}  ({g})" for t, g in zip(totals, grades, strict=True)],
                 textposition="outside",
             )
         )

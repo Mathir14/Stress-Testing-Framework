@@ -3,12 +3,15 @@ Calibration Analysis Module
 Assesses and improves model probability calibration
 """
 
-from typing import Dict, List, Optional
+import logging
+from typing import Dict, List
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from sklearn.metrics import brier_score_loss
+
+logger = logging.getLogger(__name__)
 
 
 class CalibrationAnalyzer:
@@ -103,8 +106,18 @@ class CalibrationAnalyzer:
 
             try:
                 brier = float(brier_score_loss(y_bin, prob_c))
-            except Exception:
+            except Exception as exc:
+                # The single documented degradation permitted by architecture.md
+                # §5: per-class Brier -> NaN.  It MUST be logged, otherwise a
+                # silently-NaN column is indistinguishable from a real result.
                 brier = float("nan")
+                logger.warning(
+                    "Brier score unavailable for class %s (%s); recording NaN. "
+                    "Check that probabilities for this class are finite and "
+                    "within [0, 1].",
+                    class_names[c] if c < len(class_names) else c,
+                    exc,
+                )
 
             bin_edges = np.linspace(0, 1, n_bins + 1)
             bin_ids = np.digitize(prob_c, bin_edges[1:-1])

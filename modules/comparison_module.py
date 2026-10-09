@@ -5,6 +5,8 @@ Comprehensive side-by-side comparison of all trained models.
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -23,7 +25,7 @@ class ModelComparator:
     # ------------------------------------------------------------------ #
 
     def compile_performance_metrics(
-        self, model_trainer, dataset_name: str = "Test"
+        self, model_trainer: Any, dataset_name: str = "Test"
     ) -> dict[str, dict]:
         """
         Pull stored evaluation metrics for every trained model.
@@ -53,7 +55,9 @@ class ModelComparator:
                 }
         return results
 
-    def get_confusion_matrices(self, model_trainer, dataset_name: str = "Test") -> dict:
+    def get_confusion_matrices(
+        self, model_trainer: Any, dataset_name: str = "Test"
+    ) -> dict:
         """Return confusion matrix + label info for each model."""
         cms: dict = {}
         for model_name in model_trainer.trained_models:
@@ -77,7 +81,7 @@ class ModelComparator:
         colors = ["#4C78A8", "#F58518", "#E45756", "#72B7B2"]
 
         fig = go.Figure()
-        for metric, color in zip(metric_names, colors):
+        for metric, color in zip(metric_names, colors, strict=True):
             fig.add_trace(
                 go.Bar(
                     name=metric.capitalize(),
@@ -249,8 +253,7 @@ class ModelComparator:
         """
         composite: dict[str, float] = {}
 
-        for model in metrics_dict:
-            vals = metrics_dict[model]
+        for model, vals in metrics_dict.items():
             if not vals["has_data"]:
                 continue
 

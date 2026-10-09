@@ -1,10 +1,47 @@
 """
 Stress Testing Module
 Functions for applying various stress tests to evaluate model robustness
+
+The six operators are thin delegations to :mod:`core.perturbations`
+(ADR-003).  Before Wave 2 each operator carried its own DataFrame/ndarray pair —
+twelve duplicated branches in total — and the DataFrame branches wrote through
+``DataFrame.values``, which silently discarded the result whenever pandas had
+to build an upcast temporary.  Measured on an ``int64 + float64`` frame, five of
+the six operators were silent no-ops.
 """
+
+from __future__ import annotations
+
+import logging
+from typing import Any, Mapping
 
 import numpy as np
 import pandas as pd
+
+from core.errors import UnsupportedStressTypeError
+from core.perturbations import apply_perturbation, operation_key
+
+# Re-exported by identity, not copied: ``core.validation`` owns these two
+# vocabularies (ADR-011.1) and this module is the historical import site callers
+# already use.  They are declared in ``__all__`` so the re-export is explicit to
+# both readers and linters rather than looking like a stray import.
+from core.validation import CORRUPTION_TYPES as CORRUPTION_TYPES
+from core.validation import SHIFT_TYPES as SHIFT_TYPES
+
+__all__ = ["StressTester", "CORRUPTION_TYPES", "SHIFT_TYPES"]
+
+logger = logging.getLogger(__name__)
+
+#: Frozen mapping from this module's public method names to registry keys, so
+#: the delegation table is declarative and auditable.
+_METHOD_TO_OPERATION: Mapping[str, str] = {
+    "add_gaussian_noise": "gaussian_noise",
+    "add_uniform_noise": "uniform_noise",
+    "feature_dropout": "feature_dropout",
+    "feature_corruption": "feature_corruption",
+    "scale_perturbation": "scale_perturbation",
+    "distribution_shift": "distribution_shift",
+}
 
 
 class StressTester:
@@ -12,232 +49,229 @@ class StressTester:
     Class for applying stress tests to datasets and evaluating model robustness
     """
 
-    def __init__(self):
+    def __init__(self, rng: np.random.Generator | None = None):
+        """
+        Args:
+            rng: Random generator injected by the caller.  ``None`` delegates
+                the default to :func:`core.perturbations.apply_perturbation`,
+                which is the only domain module permitted to create one when
+                the UI has not supplied ``AppContext.rng`` (architecture.md
+                §4.7, ADR-011.4).
+        """
         self.original_data = None
         self.stressed_data = {}
         self.stress_results = {}
+        self.rng = rng
 
-    def add_gaussian_noise(self, X, noise_level=0.1):
+    # ── Operators (thin delegations to the kernel) ──────────────────────────
+
+    def _apply(
+        self,
+        X,
+        method: str,
+        params: Mapping[str, Any],
+        rng: np.random.Generator | None = None,
+    ):
+        """Delegate to :func:`apply_perturbation` with this module's registry key."""
+        return apply_perturbation(
+            X,
+            _METHOD_TO_OPERATION[method],
+            params,
+            rng=self.rng if rng is None else rng,
+        )
+
+    def add_gaussian_noise(
+        self,
+        X: Any,
+        noise_level: float = 0.1,
+        *,
+        rng: np.random.Generator | None = None,
+    ) -> Any:
         """
         Add Gaussian noise to features
 
+        Formula (preserved from the pre-refactor implementation): each column
+        receives ``N(0, (std * noise_level)^2)`` noise.  A zero-variance column
+        has ``std == 0`` and therefore receives zero-width noise rather than
+        ``NaN``.
+
         Args:
-            X: Input features (DataFrame or array)
+            X: Input features (DataFrame or 2-D array)
             noise_level: Standard deviation of noise relative to feature std
+            rng: Optional generator override; defaults to ``self.rng``
 
         Returns:
-            Noisy features
+            New features of the same container type, dtype ``float64``
         """
-        if isinstance(X, pd.DataFrame):
-            # Create a copy and work with its underlying values
-            result = X.copy()
-            values = result.values
+        return self._apply(X, "add_gaussian_noise", {"noise_level": noise_level}, rng)
 
-            for i in range(values.shape[1]):
-                std = values[:, i].std()
-                noise = np.random.normal(0, std * noise_level, size=len(values))
-                values[:, i] = values[:, i] + noise
-
-            # Values were modified in place, result already has the changes
-            return result
-        else:
-            X_noisy = X.copy()
-            for i in range(X.shape[1]):
-                std = X[:, i].std()
-                noise = np.random.normal(0, std * noise_level, size=X.shape[0])
-                X_noisy[:, i] = X[:, i] + noise
-            return X_noisy
-
-    def add_uniform_noise(self, X, noise_range=0.1):
+    def add_uniform_noise(
+        self,
+        X: Any,
+        noise_range: float = 0.1,
+        *,
+        rng: np.random.Generator | None = None,
+    ) -> Any:
         """
         Add uniform noise to features
 
+        Formula: each column receives ``U(-r, r)`` where
+        ``r = (max - min) * noise_range``.
+
         Args:
-            X: Input features
+            X: Input features (DataFrame or 2-D array)
             noise_range: Range of uniform noise as fraction of feature range
+            rng: Optional generator override; defaults to ``self.rng``
 
         Returns:
-            Noisy features
+            New features of the same container type, dtype ``float64``
         """
-        if isinstance(X, pd.DataFrame):
-            # Create a copy and work with its underlying values
-            result = X.copy()
-            values = result.values
+        return self._apply(X, "add_uniform_noise", {"noise_range": noise_range}, rng)
 
-            for i in range(values.shape[1]):
-                data_range = values[:, i].max() - values[:, i].min()
-                noise = np.random.uniform(
-                    -data_range * noise_range,
-                    data_range * noise_range,
-                    size=len(values),
-                )
-                values[:, i] = values[:, i] + noise
-
-            # Values were modified in place, result already has the changes
-            return result
-        else:
-            X_noisy = X.copy()
-            for i in range(X.shape[1]):
-                data_range = X[:, i].max() - X[:, i].min()
-                noise = np.random.uniform(
-                    -data_range * noise_range, data_range * noise_range, size=X.shape[0]
-                )
-                X_noisy[:, i] = X[:, i] + noise
-            return X_noisy
-
-    def feature_dropout(self, X, dropout_rate=0.2):
+    def feature_dropout(
+        self,
+        X: Any,
+        dropout_rate: float = 0.2,
+        *,
+        rng: np.random.Generator | None = None,
+    ) -> Any:
         """
-        Randomly set features to zero (dropout)
+        Randomly zero out cells (dropout)
+
+        Formula: ``x * (rng.random(shape) > dropout_rate)`` — a per-**cell**
+        Bernoulli mask.
+
+        Naming debt, recorded in ADR-010.7 and deliberately **not** corrected in
+        this milestone: this masks individual cells, not features-per-sample as
+        the name and the UI label suggest.  The behaviour is load-bearing for
+        published results, so only the documentation changes.
 
         Args:
-            X: Input features
-            dropout_rate: Fraction of features to drop per sample
+            X: Input features (DataFrame or 2-D array)
+            dropout_rate: Fraction of cells to zero out; must be < 1
+            rng: Optional generator override; defaults to ``self.rng``
 
         Returns:
-            Features with dropout
-        """
-        if isinstance(X, pd.DataFrame):
-            # Create a copy and work with its underlying values
-            result = X.copy()
-            values = result.values
-            mask = np.random.random(values.shape) > dropout_rate
-            # Modify values in place
-            result.iloc[:, :] = values * mask
-            return result
-        else:
-            X_dropout = X.copy()
-            mask = np.random.random(X.shape) > dropout_rate
-            X_dropout = X_dropout * mask
-            return X_dropout
+            New features of the same container type, dtype ``float64``
 
-    def feature_corruption(self, X, corruption_rate=0.1, corruption_type="zero"):
+        Raises:
+            ParameterOutOfRangeError: If ``dropout_rate >= 1``.
         """
-        Corrupt random features
+        return self._apply(X, "feature_dropout", {"dropout_rate": dropout_rate}, rng)
+
+    def feature_corruption(
+        self,
+        X: Any,
+        corruption_rate: float = 0.1,
+        corruption_type: str = "zero",
+        *,
+        rng: np.random.Generator | None = None,
+    ) -> Any:
+        """
+        Corrupt a fraction of cells in each column
+
+        Formula: ``int(n_rows * corruption_rate)`` sampled cells per column are
+        replaced with ``0.0`` / the column mean / ``U(min, max)`` / a random
+        choice of ``min`` or ``max`` depending on ``corruption_type``.
 
         Args:
-            X: Input features
-            corruption_rate: Fraction of values to corrupt
-            corruption_type: 'zero', 'mean', 'random', or 'extreme'
+            X: Input features (DataFrame or 2-D array)
+            corruption_rate: Fraction of values to corrupt; must be < 1
+            corruption_type: One of ``CORRUPTION_TYPES``
+            rng: Optional generator override; defaults to ``self.rng``
 
         Returns:
-            Corrupted features
+            New features of the same container type, dtype ``float64``
+
+        Raises:
+            UnsupportedStressTypeError: If ``corruption_type`` is unknown.  The
+                pre-refactor code fell through every ``elif`` and returned the
+                frame completely unperturbed with no error and no log.
         """
-        if isinstance(X, pd.DataFrame):
-            # Create a copy and work with its underlying values
-            result = X.copy()
-            values = result.values
+        return self._apply(
+            X,
+            "feature_corruption",
+            {"corruption_rate": corruption_rate, "corruption_type": corruption_type},
+            rng,
+        )
 
-            for i in range(values.shape[1]):
-                n_corrupt = int(len(values) * corruption_rate)
-                corrupt_idx = np.random.choice(len(values), n_corrupt, replace=False)
-
-                if corruption_type == "zero":
-                    values[corrupt_idx, i] = 0
-                elif corruption_type == "mean":
-                    values[corrupt_idx, i] = values[:, i].mean()
-                elif corruption_type == "random":
-                    values[corrupt_idx, i] = np.random.uniform(
-                        values[:, i].min(), values[:, i].max(), size=n_corrupt
-                    )
-                elif corruption_type == "extreme":
-                    # Randomly assign min or max values
-                    extremes = np.random.choice(
-                        [values[:, i].min(), values[:, i].max()], n_corrupt
-                    )
-                    values[corrupt_idx, i] = extremes
-
-            # Values were modified in place, result already has the changes
-            return result
-        else:
-            X_corrupt = X.copy()
-            for i in range(X.shape[1]):
-                n_corrupt = int(X.shape[0] * corruption_rate)
-                corrupt_idx = np.random.choice(X.shape[0], n_corrupt, replace=False)
-
-                if corruption_type == "zero":
-                    X_corrupt[corrupt_idx, i] = 0
-                elif corruption_type == "mean":
-                    X_corrupt[corrupt_idx, i] = X[:, i].mean()
-                elif corruption_type == "random":
-                    X_corrupt[corrupt_idx, i] = np.random.uniform(
-                        X[:, i].min(), X[:, i].max(), size=n_corrupt
-                    )
-                elif corruption_type == "extreme":
-                    extremes = np.random.choice(
-                        [X[:, i].min(), X[:, i].max()], n_corrupt
-                    )
-                    X_corrupt[corrupt_idx, i] = extremes
-            return X_corrupt
-
-    def scale_perturbation(self, X, scale_factor=1.5):
+    def scale_perturbation(
+        self,
+        X: Any,
+        scale_factor: float = 1.5,
+        *,
+        rng: np.random.Generator | None = None,
+    ) -> Any:
         """
         Perturb feature scales
 
+        Formula: each column is multiplied by ``factor`` when
+        ``rng.random() > 0.5`` and by ``1 / factor`` otherwise — one draw per
+        column.  ``scale_factor`` has an **exclusive** lower bound of 1.0 and is
+        validated before any RNG draw, so ``scale_factor=0`` now raises
+        deterministically instead of raising ``ZeroDivisionError`` on roughly
+        half of all draws (ADR-011.7).
+
         Args:
-            X: Input features
-            scale_factor: Scaling factor for perturbation
+            X: Input features (DataFrame or 2-D array)
+            scale_factor: Scaling factor; must be > 1.0
+            rng: Optional generator override; defaults to ``self.rng``
 
         Returns:
-            Scaled features
+            New features of the same container type, dtype ``float64``
+
+        Raises:
+            ParameterOutOfRangeError: If ``scale_factor <= 1.0``.
         """
-        if isinstance(X, pd.DataFrame):
-            # Create a copy and work with its underlying values
-            result = X.copy()
-            values = result.values
+        return self._apply(X, "scale_perturbation", {"scale_factor": scale_factor}, rng)
 
-            for i in range(values.shape[1]):
-                # Randomly scale or inverse scale
-                factor = scale_factor if np.random.random() > 0.5 else 1 / scale_factor
-                values[:, i] = values[:, i] * factor
-
-            # Values were modified in place, result already has the changes
-            return result
-        else:
-            X_scaled = X.copy()
-            for i in range(X.shape[1]):
-                factor = scale_factor if np.random.random() > 0.5 else 1 / scale_factor
-                X_scaled[:, i] = X[:, i] * factor
-            return X_scaled
-
-    def distribution_shift(self, X, shift_type="mean", shift_amount=0.5):
+    def distribution_shift(
+        self,
+        X: Any,
+        shift_type: str = "mean",
+        shift_amount: float = 0.5,
+        *,
+        rng: np.random.Generator | None = None,
+    ) -> Any:
         """
         Shift feature distributions
 
+        Formulas: ``mean`` adds ``std * shift_amount`` to each column;
+        ``variance`` maps ``mean + (x - mean) * shift_amount``.
+
+        Naming debt, recorded in ADR-010.7 and deliberately **not** corrected in
+        this milestone: the ``variance`` branch contracts values toward the mean
+        for ``shift_amount < 1``; it does not scale variance.
+
         Args:
-            X: Input features
-            shift_type: 'mean' or 'variance'
-            shift_amount: Amount of shift (for mean) or scaling factor (for variance)
+            X: Input features (DataFrame or 2-D array)
+            shift_type: One of ``SHIFT_TYPES``
+            shift_amount: Amount of shift (for ``mean``) or multiplier (for
+                ``variance``)
+            rng: Optional generator override; defaults to ``self.rng``
 
         Returns:
-            Shifted features
+            New features of the same container type, dtype ``float64``
+
+        Raises:
+            UnsupportedStressTypeError: If ``shift_type`` is unknown.
         """
-        if isinstance(X, pd.DataFrame):
-            # Create a copy and work with its underlying values
-            result = X.copy()
-            values = result.values
+        return self._apply(
+            X,
+            "distribution_shift",
+            {"shift_type": shift_type, "shift_amount": shift_amount},
+            rng,
+        )
 
-            for i in range(values.shape[1]):
-                if shift_type == "mean":
-                    # Shift mean by shift_amount * std
-                    values[:, i] = values[:, i] + (values[:, i].std() * shift_amount)
-                elif shift_type == "variance":
-                    # Scale variance
-                    mean = values[:, i].mean()
-                    values[:, i] = mean + (values[:, i] - mean) * shift_amount
+    # ── Evaluation ──────────────────────────────────────────────────────────
 
-            # Values were modified in place, result already has the changes
-            return result
-        else:
-            X_shifted = X.copy()
-            for i in range(X.shape[1]):
-                if shift_type == "mean":
-                    X_shifted[:, i] = X[:, i] + (X[:, i].std() * shift_amount)
-                elif shift_type == "variance":
-                    mean = X[:, i].mean()
-                    X_shifted[:, i] = mean + (X[:, i] - mean) * shift_amount
-            return X_shifted
-
-    def evaluate_stress_test(self, model, X_original, X_stressed, y_true):
+    def evaluate_stress_test(
+        self,
+        model: Any,
+        X_original: pd.DataFrame,
+        X_stressed: pd.DataFrame,
+        y_true: Any,
+    ) -> dict[str, Any]:
         """
         Evaluate model performance on stressed data
 
@@ -292,7 +326,13 @@ class StressTester:
             "y_pred_stressed": y_pred_stressed,
         }
 
-    def batch_stress_test(self, model, X, y, stress_configs):
+    def batch_stress_test(
+        self,
+        model: Any,
+        X: pd.DataFrame,
+        y: Any,
+        stress_configs: list[dict[str, Any]],
+    ) -> dict[str, Any]:
         """
         Run multiple stress tests
 
@@ -300,10 +340,17 @@ class StressTester:
             model: Trained model
             X: Features
             y: Labels
-            stress_configs: List of stress test configurations
+            stress_configs: List of stress test configurations, each with a
+                ``type`` key naming one of the six registry keys and an optional
+                ``params`` mapping
 
         Returns:
             Dictionary of results for each stress test
+
+        Raises:
+            UnsupportedStressTypeError: If a configuration names an unknown
+                stress type.  The pre-refactor code silently ``continue``-d,
+                which hid typos until a batch produced fewer rows than expected.
         """
         results = {}
 
@@ -312,21 +359,29 @@ class StressTester:
             params = config.get("params", {})
             name = config.get("name", stress_type)
 
-            # Apply stress test
-            if stress_type == "gaussian_noise":
-                X_stressed = self.add_gaussian_noise(X, **params)
-            elif stress_type == "uniform_noise":
-                X_stressed = self.add_uniform_noise(X, **params)
-            elif stress_type == "feature_dropout":
-                X_stressed = self.feature_dropout(X, **params)
-            elif stress_type == "feature_corruption":
-                X_stressed = self.feature_corruption(X, **params)
-            elif stress_type == "scale_perturbation":
-                X_stressed = self.scale_perturbation(X, **params)
-            elif stress_type == "distribution_shift":
-                X_stressed = self.distribution_shift(X, **params)
-            else:
-                continue
+            # Resolve the registry key up front so an unknown type is a typed
+            # error naming the operator, not a bare TypeError from deep inside
+            # the parameter expansion below.
+            if stress_type not in _METHOD_TO_OPERATION.values():
+                raise UnsupportedStressTypeError(
+                    f"Unknown stress type {stress_type!r} in batch configuration "
+                    f"{name!r}. Accepted types are: "
+                    f"{', '.join(_METHOD_TO_OPERATION.values())}.",
+                    field="type",
+                    value=stress_type,
+                    context={
+                        "stress_type": stress_type,
+                        "accepted": list(_METHOD_TO_OPERATION.values()),
+                    },
+                )
+
+            method_name = next(
+                method
+                for method, key in _METHOD_TO_OPERATION.items()
+                if key == stress_type
+            )
+            logger.info("Applying batch stress %s", name)
+            X_stressed = getattr(self, method_name)(X, **params)
 
             # Evaluate
             result = self.evaluate_stress_test(model, X, X_stressed, y)
@@ -334,3 +389,21 @@ class StressTester:
             results[name] = result
 
         return results
+
+    @staticmethod
+    def label_to_operation(label: str) -> str:
+        """Translate a UI stress-test label to its registry key.
+
+        Thin wrapper over :func:`core.perturbations.operation_key` so callers in
+        the view layer never build their own label map (ADR-011.2).
+
+        Args:
+            label: Human-readable label such as ``"Gaussian Noise"``.
+
+        Returns:
+            str: The registry key.
+
+        Raises:
+            UnsupportedStressTypeError: If the label is not recognised.
+        """
+        return operation_key(label)

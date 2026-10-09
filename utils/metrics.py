@@ -3,12 +3,14 @@ Metrics Utilities
 Helper functions for calculating various metrics
 """
 
+from __future__ import annotations
+
+from typing import Any
+
 import numpy as np
-import pandas as pd
-from sklearn.metrics import brier_score_loss
 
 
-def get_confidence_scores(probabilities):
+def get_confidence_scores(probabilities: np.ndarray) -> np.ndarray:
     """
     Get confidence scores (max probability for each prediction)
 
@@ -21,7 +23,7 @@ def get_confidence_scores(probabilities):
     return np.max(probabilities, axis=1)
 
 
-def get_prediction_entropy(probabilities):
+def get_prediction_entropy(probabilities: np.ndarray) -> np.ndarray:
     """
     Calculate prediction entropy (uncertainty measure)
 
@@ -37,7 +39,9 @@ def get_prediction_entropy(probabilities):
     return entropy
 
 
-def identify_high_confidence_errors(y_true, y_pred, probabilities, threshold=0.8):
+def identify_high_confidence_errors(
+    y_true: np.ndarray, y_pred: np.ndarray, probabilities: np.ndarray, threshold: float = 0.8
+) -> dict[str, Any]:
     """
     Identify high-confidence misclassifications
 
@@ -65,7 +69,7 @@ def identify_high_confidence_errors(y_true, y_pred, probabilities, threshold=0.8
     }
 
 
-def calculate_brier_score(y_true, probabilities):
+def calculate_brier_score(y_true: np.ndarray, probabilities: np.ndarray) -> float:
     """
     Calculate Brier score for multi-class classification
 
@@ -85,7 +89,9 @@ def calculate_brier_score(y_true, probabilities):
     return np.mean(np.sum((probabilities - y_true_binary) ** 2, axis=1))
 
 
-def get_confidence_bins(confidence, n_bins=10):
+def get_confidence_bins(
+    confidence: np.ndarray, n_bins: int = 10
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Bin confidence scores
 

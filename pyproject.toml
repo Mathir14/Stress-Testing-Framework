@@ -1,0 +1,33 @@
+[tool.ruff]
+# The devcontainer targets CPython 3.11 (architecture.md §1); the host runs 3.14.
+# 3.11 is the floor the code must stay valid on, so it is what the linter checks.
+target-version = "py311"
+line-length = 100
+extend-exclude = [".venv", "saved_models", "figures", ".forge"]
+
+[tool.ruff.lint]
+# Deliberately narrow. This gate exists to catch *defects* (unused names,
+# undefined names, mutable defaults, unsorted imports), not to reformat the
+# pre-remediation code that architecture.md §9 freezes for this milestone.
+#
+# Two families are excluded on purpose rather than by accident:
+#
+#   E501 (line-too-long) — the pre-remediation tree has 175 lines over the limit
+#     and fixing them would churn the §9-frozen signatures in `modules/`/`utils/`
+#     for no defect. `line-length` above is a formatter setting only.
+#   RUF001/RUF002/RUF003 (ambiguous-unicode) — conventions §7 requires the nine
+#     emoji sidebar labels and the emoji-prefixed headings to be preserved
+#     *verbatim*. Flagging them as "ambiguous" would pressure a change the
+#     conventions forbid.
+#
+# C4xx (unnecessary-collection-call) is excluded for the same reason: 42 sites,
+# nearly all `dict()` calls in §9-frozen domain code, are stylistic only.
+select = ["E4", "E7", "E9", "F", "B", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+# `tests/test_reporters.py` must call `pytest.importorskip("streamlit")` *before*
+# importing streamlit, so its import block is intentionally split into two groups
+# with a call between them. isort cannot express that, and merging the blocks
+# would import streamlit unconditionally — turning a clean skip into a
+# collection error on a trimmed environment.
+"tests/test_reporters.py" = ["I001"]

@@ -4,19 +4,36 @@ Purpose: Prepare dataset for modeling
 Features: Upload, Validation, Cleaning, Encoding, Scaling, Train/Val/Test Split
 """
 
-from typing import Dict, List, Optional, Tuple
+from __future__ import annotations
+
+import logging
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
-import streamlit as st
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, StandardScaler
+
+from core.errors import DatasetError, DatasetLoadError, ValidationError
+from core.reporters import NullReporter, Reporter
+
+logger = logging.getLogger(__name__)
+
+#: Missing-value strategy names accepted by :meth:`DataManager.handle_missing_values`.
+FILL_STRATEGIES: Tuple[str, ...] = (
+    "mean",
+    "median",
+    "mode",
+    "drop",
+    "forward_fill",
+    "backward_fill",
+)
 
 
 class DataManager:
     """Manages all data operations including loading, validation, preprocessing, and splitting"""
 
-    def __init__(self):
+    def __init__(self, reporter: Reporter | None = None):
         self.raw_data = None
         self.processed_data = None
         self.X_train = None
@@ -29,24 +46,45 @@ class DataManager:
         self.label_encoders = {}
         self.target_column = None
         self.feature_columns = None
+        self.reporter: Reporter = reporter if reporter is not None else NullReporter()
 
-    def load_dataset(self, uploaded_file) -> pd.DataFrame:
+    def load_dataset(self, uploaded_file: Any) -> pd.DataFrame:
         """
         Load CSV dataset from uploaded file
 
         Args:
-            uploaded_file: Streamlit UploadedFile object
+            uploaded_file: File-like object accepted by ``pandas.read_csv``
+                (Streamlit's ``UploadedFile`` satisfies this)
 
         Returns:
             pd.DataFrame: Loaded dataset
+
+        Raises:
+            DatasetLoadError: If the file cannot be read or parsed.  The
+                pre-remediation implementation called ``st.error`` and returned
+                ``None``, which conflated "no data" with "failed" (ADR-004,
+                architecture.md §9 item 1).
         """
         try:
             self.raw_data = pd.read_csv(uploaded_file)
-            st.success(f"✅ Dataset loaded successfully! Shape: {self.raw_data.shape}")
-            return self.raw_data
-        except Exception as e:
-            st.error(f"❌ Error loading dataset: {str(e)}")
-            return None
+        except (OSError, ValueError, UnicodeDecodeError) as exc:
+            logger.exception("Failed to load dataset")
+            raise DatasetLoadError(
+                f"Could not read the uploaded dataset: {exc}. Confirm the file "
+                "is a valid, comma-separated CSV with a header row.",
+                context={"error_type": type(exc).__name__},
+            ) from exc
+        except Exception as exc:  # noqa: BLE001 - re-typed at the boundary
+            logger.exception("Unexpected failure loading dataset")
+            raise DatasetLoadError(
+                f"Could not read the uploaded dataset: {exc}.",
+                context={"error_type": type(exc).__name__},
+            ) from exc
+
+        self.reporter.success(
+            f"✅ Dataset loaded successfully! Shape: {self.raw_data.shape}"
+        )
+        return self.raw_data
 
     def validate_dataset(self, df: pd.DataFrame) -> Dict:
         """
@@ -58,6 +96,18 @@ class DataManager:
         Returns:
             Dict: Validation results and statistics
         """
+        if not isinstance(df, pd.DataFrame):
+            raise ValidationError(
+                f"validate_dataset expects a pandas DataFrame, got "
+                f"{type(df).__name__}.",
+                context={"received_type": type(df).__name__},
+            )
+        if df.shape[0] == 0:
+            raise DatasetError(
+                "The dataset has no rows; nothing to validate.",
+                context={"shape": list(df.shape)},
+            )
+
         validation_report = {
             "shape": df.shape,
             "columns": df.columns.tolist(),
@@ -74,32 +124,35 @@ class DataManager:
 
         return validation_report
 
-    def display_summary(self, df: pd.DataFrame):
-        """
-        Display comprehensive dataset summary
+    def get_summary_frames(self, df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+        """Build the dataset-summary tables without rendering them.
+
+        Split out of :meth:`display_summary` so that the presentation concern
+        lives in ``views/module_01_data.py`` while the layout-independent
+        computation stays here and remains testable (architecture.md §3).
 
         Args:
-            df: Input DataFrame
+            df: Loaded dataset.
+
+        Returns:
+            Dict[str, pd.DataFrame]: ``preview``, ``columns`` and ``statistics``.
+
+        Raises:
+            DatasetError: If ``df`` has no rows.
         """
-        st.subheader("📊 Dataset Summary")
+        if not isinstance(df, pd.DataFrame):
+            raise ValidationError(
+                f"get_summary_frames expects a pandas DataFrame, got "
+                f"{type(df).__name__}.",
+                context={"received_type": type(df).__name__},
+            )
+        if df.shape[0] == 0:
+            raise DatasetError(
+                "Cannot build a dataset summary for a frame with no rows.",
+                context={"shape": list(df.shape)},
+            )
 
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Rows", df.shape[0])
-        with col2:
-            st.metric("Columns", df.shape[1])
-        with col3:
-            st.metric("Missing Values", df.isnull().sum().sum())
-        with col4:
-            st.metric("Duplicates", df.duplicated().sum())
-
-        # Display first few rows
-        st.subheader("🔍 Data Preview")
-        st.dataframe(df.head(10), use_container_width=True)
-
-        # Column information
-        st.subheader("📋 Column Information")
-        col_info = pd.DataFrame(
+        column_info = pd.DataFrame(
             {
                 "Data Type": df.dtypes,
                 "Non-Null Count": df.count(),
@@ -108,46 +161,147 @@ class DataManager:
                 "Unique Values": df.nunique(),
             }
         )
-        st.dataframe(col_info, use_container_width=True)
+        return {
+            "preview": df.head(10),
+            "columns": column_info,
+            "statistics": df.describe(),
+        }
 
-        # Statistical summary
-        st.subheader("📈 Statistical Summary")
-        st.dataframe(df.describe(), use_container_width=True)
-
-    def handle_missing_values(self, df: pd.DataFrame, strategy: Dict) -> pd.DataFrame:
+    def display_summary(self, df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
         """
-        Handle missing values based on specified strategy
+        Delegating wrapper kept for API compatibility
+
+        The rendering moved to ``views/module_01_data.py`` in Wave 4; this method
+        now only computes the summary tables and returns them, so the frozen
+        public contract in architecture.md §9 survives the Streamlit
+        decoupling.
 
         Args:
             df: Input DataFrame
-            strategy: Dictionary mapping column names to strategies
-                     ('mean', 'median', 'mode', 'drop', 'forward_fill', 'backward_fill', or custom value)
 
         Returns:
-            pd.DataFrame: DataFrame with missing values handled
+            Dict[str, pd.DataFrame]: The summary tables a view should render.
         """
-        df_copy = df.copy()
+        return self.get_summary_frames(df)
+
+    def handle_missing_values(
+        self,
+        df: pd.DataFrame,
+        strategy: Dict[str, Any],
+        custom_fill_value: float = 0.0,
+    ) -> pd.DataFrame:
+        """
+        Handle missing values based on specified strategy
+
+        Chained assignment with ``inplace=True`` is banned by conventions §5.
+        The pre-remediation form (``df[col].fillna(v, inplace=True)``) emitted a
+        ``FutureWarning`` on the ``forward_fill`` / ``backward_fill`` branches
+        and mutates a throwaway ``Series``, which breaks the moment pandas
+        Copy-on-Write is enabled or pandas 3.0 lands.  Every branch now assigns
+        the returned frame/Series explicitly.
+
+        Args:
+            df: Input DataFrame
+            strategy: Mapping of column name to one of :data:`FILL_STRATEGIES`,
+                or — for the custom branch — the literal string
+                ``"custom"``
+            custom_fill_value: Value used when a column's strategy is
+                ``"custom"``.  This parameter replaces the previous overload
+                where the loop variable doubled as both the strategy name and
+                the fill value, which made the accepted vocabulary
+                un-introspectable.
+
+        Returns:
+            pd.DataFrame: A new DataFrame with missing values handled
+
+        Raises:
+            ValidationError: If ``strategy`` is not a mapping, or a column maps
+                to a value that is neither a known strategy nor ``"custom"``.
+        """
+        if not isinstance(strategy, dict):
+            raise ValidationError(
+                f"strategy must be a mapping of column -> strategy, got "
+                f"{type(strategy).__name__}.",
+                context={"received_type": type(strategy).__name__},
+            )
+
+        df_copy = df.copy(deep=True)
+        applied: Dict[str, str] = {}
+        skipped: List[str] = []
 
         for column, method in strategy.items():
             if column not in df_copy.columns:
+                skipped.append(str(column))
+                logger.warning(
+                    "handle_missing_values: column %r is not in the frame; "
+                    "strategy skipped.",
+                    column,
+                )
                 continue
 
-            if method == "mean":
-                df_copy[column].fillna(df_copy[column].mean(), inplace=True)
-            elif method == "median":
-                df_copy[column].fillna(df_copy[column].median(), inplace=True)
-            elif method == "mode":
-                df_copy[column].fillna(df_copy[column].mode()[0], inplace=True)
-            elif method == "drop":
-                df_copy.dropna(subset=[column], inplace=True)
-            elif method == "forward_fill":
-                df_copy[column].fillna(method="ffill", inplace=True)
-            elif method == "backward_fill":
-                df_copy[column].fillna(method="bfill", inplace=True)
-            else:
-                # Custom value
-                df_copy[column].fillna(method, inplace=True)
+            series = df_copy[column]
 
+            if method == "mean":
+                fill = series.mean()
+            elif method == "median":
+                fill = series.median()
+            elif method == "mode":
+                modes = series.mode()
+                if modes.empty:
+                    logger.warning(
+                        "mode strategy skipped for column %r: every value is "
+                        "missing.",
+                        column,
+                    )
+                    skipped.append(str(column))
+                    continue
+                fill = modes.iloc[0]
+            elif method == "drop":
+                df_copy = df_copy.dropna(subset=[column])
+                applied[str(column)] = "drop"
+                continue
+            elif method == "forward_fill":
+                df_copy[column] = series.ffill()
+                applied[str(column)] = "forward_fill"
+                continue
+            elif method == "backward_fill":
+                df_copy[column] = series.bfill()
+                applied[str(column)] = "backward_fill"
+                continue
+            elif method == "custom":
+                fill = custom_fill_value
+            else:
+                raise ValidationError(
+                    f"Unknown missing-value strategy {method!r} for column "
+                    f"{column!r}. Accepted strategies are: "
+                    f"{', '.join((*FILL_STRATEGIES, 'custom'))}, or pass a "
+                    "numeric value together with strategy='custom'.",
+                    field=str(column),
+                    value=method,
+                    context={
+                        "column": str(column),
+                        "accepted": [*FILL_STRATEGIES, "custom"],
+                    },
+                )
+
+            if pd.isna(fill):
+                logger.warning(
+                    "Statistic strategy %r skipped for column %r: the statistic "
+                    "is NaN because every value is missing.",
+                    method,
+                    column,
+                )
+                skipped.append(str(column))
+                continue
+
+            df_copy[column] = series.fillna(fill)
+            applied[str(column)] = str(method)
+
+        logger.info(
+            "handle_missing_values applied %d strategy/-ies, skipped %d",
+            len(applied),
+            len(skipped),
+        )
         return df_copy
 
     def encode_categorical(
@@ -164,7 +318,7 @@ class DataManager:
         Returns:
             pd.DataFrame: DataFrame with encoded columns
         """
-        df_copy = df.copy()
+        df_copy = df.copy(deep=True)
 
         if method == "label":
             for col in columns:
@@ -286,37 +440,53 @@ class DataManager:
 
         Returns:
             Dict: Summary statistics of splits
-        """
-        if self.X_train is None:
-            return None
 
-        summary = {
-            "train": {
-                "samples": len(self.X_train),
-                "percentage": len(self.X_train)
-                / (len(self.X_train) + len(self.X_val) + len(self.X_test))
-                * 100,
-                "class_distribution": self.y_train.value_counts().to_dict(),
-            },
-            "validation": {
-                "samples": len(self.X_val),
-                "percentage": len(self.X_val)
-                / (len(self.X_train) + len(self.X_val) + len(self.X_test))
-                * 100,
-                "class_distribution": self.y_val.value_counts().to_dict(),
-            },
-            "test": {
-                "samples": len(self.X_test),
-                "percentage": len(self.X_test)
-                / (len(self.X_train) + len(self.X_val) + len(self.X_test))
-                * 100,
-                "class_distribution": self.y_test.value_counts().to_dict(),
-            },
+        Raises:
+            DatasetError: If :meth:`split_data` has not been called, if any
+                split is missing, or if the splits are empty.  The
+                pre-remediation implementation returned ``None`` before
+                splitting — forbidden by conventions §3 as a failure signal —
+                and divided by the total split length, which raises
+                ``ZeroDivisionError`` when every split is empty.  ``X_val`` was
+                additionally unguarded, so ``len(None)`` raised ``TypeError``.
+        """
+        splits = {
+            "train": (self.X_train, self.y_train),
+            "validation": (self.X_val, self.y_val),
+            "test": (self.X_test, self.y_test),
         }
+
+        missing = [
+            name for name, (features, _labels) in splits.items() if features is None
+        ]
+        if missing:
+            raise DatasetError(
+                f"Cannot summarise splits: {', '.join(missing)} "
+                f"{'is' if len(missing) == 1 else 'are'} not available. Call "
+                "split_data() first.",
+                context={"missing_splits": missing},
+            )
+
+        total = sum(len(features) for features, _labels in splits.values())
+        if total == 0:
+            raise DatasetError(
+                "Cannot summarise splits: every split is empty.",
+                context={"total_samples": 0},
+            )
+
+        summary = {}
+        for name, (features, labels) in splits.items():
+            if features is None:  # pragma: no cover - guarded above
+                continue
+            summary[name] = {
+                "samples": len(features),
+                "percentage": len(features) / total * 100,
+                "class_distribution": labels.value_counts().to_dict(),
+            }
 
         return summary
 
-    def save_processed_data(self, df: pd.DataFrame):
+    def save_processed_data(self, df: pd.DataFrame) -> None:
         """Save processed data"""
         self.processed_data = df
 

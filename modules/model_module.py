@@ -4,16 +4,15 @@ Purpose: Train and evaluate ML models on clean data
 Models: Logistic Regression, Random Forest, XGBoost
 """
 
-import os
-import pickle
-from typing import Any, Dict, Tuple
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
-import streamlit as st
-from plotly.subplots import make_subplots
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
@@ -23,24 +22,31 @@ from sklearn.metrics import (
     f1_score,
     precision_score,
     recall_score,
-    roc_auc_score,
-    roc_curve,
 )
 from xgboost import XGBClassifier
+
+from core.config import get_config
+from core.model_io import ArtifactRecord, ModelArtifactStore
+
+logger = logging.getLogger(__name__)
 
 
 class ModelTrainer:
     """Manages training and evaluation of baseline ML models"""
 
-    def __init__(self):
+    def __init__(self, reporter: Any | None = None) -> None:
         self.models = {}
         self.trained_models = {}
         self.predictions = {}
         self.probabilities = {}
         self.metrics = {}
         self.best_model = None
+        # Wave 1/4: the store is the only place persistence happens, and the
+        # reporter replaces the previous st.success calls (ADR-001, ADR-002).
+        self.reporter = reporter
+        self._store = ModelArtifactStore(get_config().artifacts)
 
-    def get_model(self, model_name: str, **params):
+    def get_model(self, model_name: str, **params: Any) -> Any:
         """
         Get model instance with specified parameters
 
@@ -74,7 +80,13 @@ class ModelTrainer:
         else:
             raise ValueError(f"Unknown model: {model_name}")
 
-    def train_model(self, model_name: str, X_train, y_train, **params):
+    def train_model(
+        self,
+        model_name: str,
+        X_train: pd.DataFrame,
+        y_train: pd.Series,
+        **params: Any,
+    ) -> Any:
         """
         Train a model
 
@@ -92,7 +104,9 @@ class ModelTrainer:
         self.trained_models[model_name] = model
         return model
 
-    def predict(self, model_name: str, X):
+    def predict(
+        self, model_name: str, X: pd.DataFrame
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
         Make predictions
 
@@ -112,7 +126,13 @@ class ModelTrainer:
 
         return predictions, probabilities
 
-    def evaluate_model(self, model_name: str, X_test, y_test, dataset_name="Test"):
+    def evaluate_model(
+        self,
+        model_name: str,
+        X_test: pd.DataFrame,
+        y_test: pd.Series,
+        dataset_name: str = "Test",
+    ) -> dict[str, Any]:
         """
         Evaluate model performance
 
@@ -154,7 +174,9 @@ class ModelTrainer:
 
         return metrics
 
-    def get_classification_report(self, model_name: str, dataset_name="Test"):
+    def get_classification_report(
+        self, model_name: str, dataset_name: str = "Test"
+    ) -> dict[str, Any] | None:
         """
         Get detailed classification report
 
@@ -180,7 +202,9 @@ class ModelTrainer:
         )
         return report
 
-    def plot_confusion_matrix(self, model_name: str, dataset_name="Test"):
+    def plot_confusion_matrix(
+        self, model_name: str, dataset_name: str = "Test"
+    ) -> go.Figure | None:
         """
         Create interactive confusion matrix plot
 
@@ -226,7 +250,9 @@ class ModelTrainer:
 
         return fig
 
-    def plot_metrics_comparison(self, dataset_name="Test"):
+    def plot_metrics_comparison(
+        self, dataset_name: str = "Test"
+    ) -> go.Figure | None:
         """
         Compare metrics across all trained models
 
@@ -276,7 +302,9 @@ class ModelTrainer:
 
         return fig
 
-    def get_feature_importance(self, model_name: str, feature_names):
+    def get_feature_importance(
+        self, model_name: str, feature_names: list[str]
+    ) -> pd.DataFrame | None:
         """
         Get feature importance for tree-based models
 
@@ -303,7 +331,9 @@ class ModelTrainer:
 
         return importance_df
 
-    def plot_feature_importance(self, model_name: str, feature_names, top_n=10):
+    def plot_feature_importance(
+        self, model_name: str, feature_names: list[str], top_n: int = 10
+    ) -> go.Figure | None:
         """
         Plot feature importance
 
@@ -342,39 +372,98 @@ class ModelTrainer:
 
         return fig
 
-    def save_model(self, model_name: str, filepath: str):
+    def save_model(self, model_name: str, filepath: str) -> ArtifactRecord:
         """
-        Save trained model to disk
+        Save a trained model through the attested artifact store
+
+        All persistence is delegated to ``core.model_io.ModelArtifactStore``
+        (ADR-001).  The raw ``filepath`` is reduced to its basename so a caller
+        cannot escape the store root, and the previous
+        ``os.makedirs(os.path.dirname(filepath))`` call is gone — it raised
+        ``FileNotFoundError`` for a bare filename, which is the first-save path
+        in a fresh checkout.
 
         Args:
             model_name: Name of the model
-            filepath: Path to save model
+            filepath: Destination path; only its filename is honoured
+
+        Returns:
+            ArtifactRecord: The attestation record written by the store
+
+        Raises:
+            ValueError: If the model has not been trained
+            ArtifactPathError: If the filename fails sanitisation or containment
         """
         if model_name not in self.trained_models:
             raise ValueError(f"Model {model_name} not trained yet")
 
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        record = self._store.save(
+            self.trained_models[model_name],
+            Path(filepath).name,
+            model_name=model_name,
+        )
+        logger.info(
+            "Saved model %s as %s (%d bytes)",
+            model_name,
+            record.name,
+            record.size_bytes,
+        )
+        if self.reporter is not None:
+            self.reporter.success(f"✅ Model saved to {record.name}")
+        return record
 
-        with open(filepath, "wb") as f:
-            pickle.dump(self.trained_models[model_name], f)
-
-        st.success(f"✅ Model saved to {filepath}")
-
-    def load_model(self, model_name: str, filepath: str):
+    def load_model(
+        self, model_name: str, filepath: str, *, trust: bool = False
+    ) -> ArtifactRecord:
         """
-        Load trained model from disk
+        Load a trained model through the attested artifact store
 
         Args:
             model_name: Name to assign to the model
-            filepath: Path to load model from
+            filepath: Path to load model from; only its filename is honoured
+            trust: Opt in to loading an unattested or tampered file.  The UI
+                only sets this from an explicit, default-unchecked confirmation
+                stating that the file executes arbitrary Python code.
+
+        Returns:
+            ArtifactRecord: The attestation record read by the store
+
+        Raises:
+            ArtifactNotFoundError: No such artifact
+            ArtifactIntegrityError: Hash mismatch, size cap, or wrong type
+            ArtifactUntrustedError: Unattested file and ``trust`` not set
         """
-        with open(filepath, "rb") as f:
-            model = pickle.load(f)
-
+        model, record = self._store.load(Path(filepath).name, trust=trust)
         self.trained_models[model_name] = model
-        st.success(f"✅ Model loaded from {filepath}")
+        logger.info(
+            "Loaded model %s from %s%s",
+            model_name,
+            record.name,
+            " (unattested, trust=True)" if trust and not record.created_at else "",
+        )
+        if self.reporter is not None:
+            self.reporter.success(f"✅ Model loaded from {record.name}")
+        return record
 
-    def get_best_model(self, metric="accuracy", dataset_name="Test"):
+    def list_saved_models(self) -> list[ArtifactRecord]:
+        """Return the attested artifact records available for loading.
+
+        Returns:
+            list[ArtifactRecord]: Records in manifest insertion order.
+        """
+        return self._store.list_artifacts()
+
+    def delete_saved_model(self, filepath: str) -> None:
+        """Delete an artifact and its manifest entry.
+
+        Args:
+            filepath: Path whose filename identifies the artifact.
+        """
+        self._store.delete(Path(filepath).name)
+
+    def get_best_model(
+        self, metric: str = "accuracy", dataset_name: str = "Test"
+    ) -> tuple[str | None, float]:
         """
         Get the best performing model based on a metric
 
@@ -398,7 +487,9 @@ class ModelTrainer:
         self.best_model = best_model
         return best_model, best_score
 
-    def get_probability_distribution(self, model_name: str, dataset_name="Test"):
+    def get_probability_distribution(
+        self, model_name: str, dataset_name: str = "Test"
+    ) -> np.ndarray | None:
         """
         Get probability distribution for predictions
 
@@ -417,7 +508,7 @@ class ModelTrainer:
 
         return self.metrics[model_name][dataset_name]["probabilities"]
 
-    def get_model_summary(self):
+    def get_model_summary(self) -> pd.DataFrame:
         """
         Get summary of all trained models
 

@@ -34,7 +34,11 @@ machine-checkable (`tests/test_architecture.py`).
   `Exception` requires a `logger.exception(...)` or re-raise.
 - Error messages are user-actionable sentences naming the offending field and the
   accepted range. Machine context goes in `err.context`, never in the message.
-- Views own all `st.error`/`st.warning` rendering.
+- Views own all `st.error`/`st.warning` rendering, via `views.reporters`.
+- A public kernel API MUST NOT leak a raw builtin exception. Every documented
+  failure mode is a typed `FrameworkError`; if a function's docstring declares
+  `ValidationError` as its only raise, then every input — including degenerate
+  ones like duplicate column labels — raises it (reviewer MAJOR-2).
 
 ## 4. Logging
 
@@ -75,9 +79,42 @@ machine-checkable (`tests/test_architecture.py`).
   radio labels).
 - Widget `key=` literals are part of the persisted session contract; never rename
   or drop them during extraction.
-- `use_container_width=True` on `st.dataframe`/`st.plotly_chart` calls.
+- `width="stretch"` on `st.dataframe`/`st.plotly_chart` calls — **not**
+  `use_container_width=True`. Measured on the pinned `streamlit==1.54.0`:
+  `use_container_width` prints *"Please replace `use_container_width` with
+  `width`. `use_container_width` will be removed after 2025-12-31. For
+  `use_container_width=True`, use `width='stretch'`."* The 76 pre-remediation
+  `use_container_width=True` call sites were migrated to `width="stretch"` when
+  the page bodies were extracted, so this rule previously contradicted every
+  `st.dataframe`/`st.plotly_chart` call in the tree. `use_container_width=False`
+  maps to `width="content"`.
 - Long or blocking work runs inside `st.spinner(...)`.
 - Every mutating action reports success **or** a rendered `FrameworkError`.
+  Concretely: any `views/module_*.py` containing an `if st.button(…)` handler
+  MUST import `render_error` / `render_errors` from `views.reporters`, and each
+  such handler body MUST apply one. Wrap the **whole** handler with
+  `with render_errors():` rather than hand-copying a `try` per call site — a
+  copied `try` is easy to forget at the next button, and the context manager
+  additionally guarantees a rejected call cannot fall through into display code
+  reading a variable it was going to bind. Catching a specific
+  `FrameworkError` subclass is equally acceptable. Enforced by
+  `tests/test_architecture.py`; the defect class is reviewer MAJOR-1.
+- A UI control MUST NOT offer a value the kernel rejects. Every position of every
+  slider and selectbox is validated against `core.validation`, with no carve-outs
+  (ADR-015).
+- **A mutating action with no pressed button is untested code**, however
+  thoroughly its page renders. `tests/test_app_smoke.py` presses every one; this
+  is reviewer MINOR-1's lesson, and the false rationale that once excused the gap
+  ("`AppTest` cannot reach buttons") must not be reintroduced. **Press coverage
+  is enforced, not asserted:**
+  `test_every_mutating_button_in_the_views_is_pressed_here`
+  (`tests/test_architecture.py`, tier T0) derives every `st.button` site in
+  `views/` *and* every press declared in `tests/test_app_smoke.py` from the
+  tree, and requires the two to match in both directions — an unpressed button,
+  a press that names no button, and a declaration whose test body never calls
+  `.click()` each fail it (run-005 M1). The runtime half, that those presses
+  actually execute and report success or a rendered `FrameworkError`, stays with
+  the smoke suite's action tier; neither half implies the other.
 
 ## 8. Docstrings
 

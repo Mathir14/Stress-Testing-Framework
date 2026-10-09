@@ -5,9 +5,11 @@ Aggregates results from all modules and generates exportable reports.
 
 from __future__ import annotations
 
+import html
 import io
 import json
 from datetime import datetime
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -24,8 +26,8 @@ class ReportGenerator:
 
     def compile_report(
         self,
-        trainer,
-        data_manager,
+        trainer: Any,
+        data_manager: Any,
         *,
         stress_results: dict | None = None,
         cal_ece: dict | None = None,
@@ -65,11 +67,6 @@ class ReportGenerator:
 
             # ── Robustness ─────────────────────────────────────────────
             if stress_results and m in stress_results:
-                drops = [
-                    r.get("performance_drop", 0)
-                    for r in stress_results[m].values()
-                    if isinstance(r, dict)
-                ]
                 for stress_type, r in stress_results[m].items():
                     if isinstance(r, dict):
                         rob_rows.append(
@@ -170,7 +167,7 @@ class ReportGenerator:
         colors = ["#4C78A8", "#F58518", "#E45756", "#72B7B2"]
 
         fig = go.Figure()
-        for metric, color in zip(metrics, colors):
+        for metric, color in zip(metrics, colors, strict=True):
             fig.add_trace(
                 go.Bar(
                     name=metric,
@@ -315,7 +312,7 @@ class ReportGenerator:
                 x=models,
                 y=eces,
                 marker_color=colors,
-                text=[f"{e:.4f}\n({q})" for e, q in zip(eces, quals)],
+                text=[f"{e:.4f}\n({q})" for e, q in zip(eces, quals, strict=True)],
                 textposition="outside",
             )
         )
@@ -411,24 +408,37 @@ class ReportGenerator:
         return combined.to_csv(index=False).encode("utf-8")
 
     def export_to_html(self, report: dict) -> str:
-        """Generate a self-contained styled HTML report."""
+        """Generate a self-contained styled HTML report.
+
+        Every value interpolated into markup passes through
+        ``html.escape(str(value), quote=True)`` (conventions §5, architecture.md
+        §6.5).  Dataset names, model names and metric strings are all
+        user-controlled, so unescaped interpolation is a stored-XSS vector in a
+        file the user then opens in a browser.
+        """
         generated = report["generated_at"]
         dataset = report["dataset_name"]
         summary = report["summary"]
+
+        def _esc(value: object) -> str:
+            """Escape one interpolated value for HTML text or attribute use."""
+            return html.escape(str(value), quote=True)
 
         def _table(rows: list[dict]) -> str:
             if not rows:
                 return "<p><em>No data available.</em></p>"
             keys = list(rows[0].keys())
-            header = "".join(f"<th>{k}</th>" for k in keys)
+            header = "".join(f"<th>{_esc(k)}</th>" for k in keys)
             body = ""
             for row in rows:
-                body += "<tr>" + "".join(f"<td>{row[k]}</td>" for k in keys) + "</tr>"
+                body += "<tr>" + "".join(
+                    f"<td>{_esc(row[k])}</td>" for k in keys
+                ) + "</tr>"
             return (
                 f"<table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table>"
             )
 
-        html = f"""<!DOCTYPE html>
+        document = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -453,28 +463,28 @@ class ReportGenerator:
 </head>
 <body>
 <h1>🔬 ML Model Reliability Report</h1>
-<p>Generated: <strong>{generated}</strong> &nbsp;|&nbsp; Dataset: <strong>{dataset}</strong></p>
+<p>Generated: <strong>{_esc(generated)}</strong> &nbsp;|&nbsp; Dataset: <strong>{_esc(dataset)}</strong></p>
 
 <h2>Summary</h2>
 <div class="kpi-grid">
   <div class="kpi-card">
-    <div class="kpi-value">{summary['num_models']}</div>
+    <div class="kpi-value">{_esc(summary['num_models'])}</div>
     <div class="kpi-label">Models Trained</div>
   </div>
   <div class="kpi-card">
-    <div class="kpi-value">{summary['num_stressed']}</div>
+    <div class="kpi-value">{_esc(summary['num_stressed'])}</div>
     <div class="kpi-label">Models Stress-Tested</div>
   </div>
   <div class="kpi-card">
-    <div class="kpi-value">{summary['best_performance']}</div>
+    <div class="kpi-value">{_esc(summary['best_performance'])}</div>
     <div class="kpi-label">Best Performance</div>
   </div>
   <div class="kpi-card">
-    <div class="kpi-value">{summary['best_reliability']}</div>
+    <div class="kpi-value">{_esc(summary['best_reliability'])}</div>
     <div class="kpi-label">Best Reliability</div>
   </div>
   <div class="kpi-card">
-    <div class="kpi-value">{summary['most_robust']}</div>
+    <div class="kpi-value">{_esc(summary['most_robust'])}</div>
     <div class="kpi-label">Most Robust</div>
   </div>
 </div>
@@ -492,11 +502,11 @@ class ReportGenerator:
 {_table(report['reliability'])}
 
 <div class="footer">
-  Generated by ML Model Reliability &amp; Stress Testing Framework &mdash; {generated}
+  Generated by ML Model Reliability &amp; Stress Testing Framework &mdash; {_esc(generated)}
 </div>
 </body>
 </html>"""
-        return html
+        return document
 
     def export_to_pdf(self, report: dict) -> bytes:
         """Generate a PDF report using reportlab."""
@@ -565,20 +575,27 @@ class ReportGenerator:
             )
             return t
 
+        # reportlab Paragraph consumes mini-HTML, so the same escaping applies
+        # (architecture.md §6.5): a dataset name containing markup would
+        # otherwise be injected into the PDF body.
+        def _esc(value: object) -> str:
+            return html.escape(str(value), quote=True)
+
         story = [
             Paragraph("ML Model Reliability Report", h1),
             Spacer(1, 0.3 * cm),
             Paragraph(
-                f"Generated: {report['generated_at']}  |  Dataset: {report['dataset_name']}",
+                f"Generated: {_esc(report['generated_at'])}  |  "
+                f"Dataset: {_esc(report['dataset_name'])}",
                 body,
             ),
             Spacer(1, 0.5 * cm),
             Paragraph("Summary", h2),
             Paragraph(
-                f"Models trained: {report['summary']['num_models']}  |  "
-                f"Best performance: {report['summary']['best_performance']}  |  "
-                f"Best reliability: {report['summary']['best_reliability']}  |  "
-                f"Most robust: {report['summary']['most_robust']}",
+                f"Models trained: {_esc(report['summary']['num_models'])}  |  "
+                f"Best performance: {_esc(report['summary']['best_performance'])}  |  "
+                f"Best reliability: {_esc(report['summary']['best_reliability'])}  |  "
+                f"Most robust: {_esc(report['summary']['most_robust'])}",
                 body,
             ),
             Spacer(1, 0.5 * cm),

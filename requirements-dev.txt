@@ -1,0 +1,6 @@
+pytest==8.4.1
+pytest-cov==5.0.0
+# Linter for the `[tool.ruff]` configuration in pyproject.toml. Pinned per
+# conventions §9 (`requirements.txt` is a lockfile; test tooling lives here).
+# The selected rule set is documented and justified in pyproject.toml.
+ruff==0.16.10
