@@ -1007,3 +1007,64 @@ being tuned to one allocation pattern.
    *text*, which is exactly the diff this milestone's review process depends on
    staying small. `ruff check` (the defect-finding rule set) is green and is the
    binding gate.
+10. **Prediction / ECE / entropy caching** — declined in run-011 (ADR-020) and
+   recorded here with its precondition, not as a vague wish. A cache at this
+   boundary needs a **stable key**: models are currently identified by mutable
+   name and input frames are unhashed, so a `st.cache_data` key could silently
+   serve a stale score. Unblock by first giving models an identity hash and
+   input frames a content digest; only then can a cache be both correct and
+   useful. §8's figure-generation-only bound stands until that ADR lands.
+11. **`mypy` type gate** — Architect-approved in run-011 (critic m4) as dev-only
+   (`requirements-dev.txt` plus a `[tool.mypy]` config). **Landed in run-012**:
+   `mypy==2.4.0` is pinned and `[tool.mypy]` (with `ignore_missing_imports`,
+   because the frozen stack ships no stubs) is in `pyproject.toml`. `mypy core`
+   is **green** (the authored kernel, 9 modules). It is deliberately **not** a
+   CI gate: the legacy `modules/` subtree still carries annotation debt, so a
+   tree-wide gate would fail; promoting it to a gate requires cleaning that
+   subtree first. The lockfile split/hashes half of m4 stays backlog item 4
+   (ADR-007).
+
+---
+
+## Run-011 remediation (ADR-017..020)
+
+The run-011 Critic found four correctness-critical defects in the scored outputs
+and a documented contract (architecture §9 item 9) that was unmet. All were
+re-derived and fixed:
+
+| Finding | Fix | ADR / task |
+|---|---|---|
+| C1 target never label-encoded; calibration crashes/mis-scores | calibration/Brier operate in class-index space via `classes=`; `classes=None` is strict identity | ADR-017 / T3 |
+| C2 HCE rate is `len(dict)` (always 4) | both sites use `hce_dict["count"]`; `TypedDict` return | C2 / T4, T11 |
+| C3/M1 adding evidence lowers the score | fixed denominator, zero for missing, no redistribution; `rated` gate | ADR-018 / T9, T10 |
+| C4 `batch_stress_test` bypasses validation | validate each config before `**params` | C4 / T7 |
+| M2 entropy nats vs bits | `get_prediction_entropy` returns bits | ADR-018 / T4 |
+| M3 `split_data` bare sklearn `ValueError` | stratify guard + `DatasetError` wrap | ADR-019 / T6 |
+| M4 bare `ValueError`/`TypeError` escapes | `UnknownModelError`/`ModelNotTrainedError`/`ReportExportError` | ADR-019 / T1, T5, T12 |
+| M5 getters mutate state | pure `_compute_robustness_breakdown` | ADR-019 / T8 |
+| M6 no caching | declined; precondition recorded (backlog 10) | ADR-020 |
+| M7 scoring policy duplicated | one owner, `core.config.ScoringPolicy` | ADR-018 / T2 |
+| M8 no tests for the above | `test_calibration.py`, `test_comparison.py`, `test_metrics.py`, `test_score_monotonicity.py`; baseline regenerated | T13 |
+
+The **only bit-exact numeric freeze** in the milestone,
+`tests/fixtures/reliability_baseline.json`, was regenerated for the new
+zero-for-missing policy (ADR-010.5); `tests/test_reliability_parity.py` pins it.
+Raw label spaces are preserved for training, `predict`, accuracy and reports —
+only the calibration/Brier boundary maps labels to columns. No new runtime
+dependency was introduced; `core.model_io` is untouched.
+
+## Run-012 review repair
+
+The run-012 Reviewer found that `ReportGenerator.compile_report` still crowned an
+**unrated** model as `best_reliability`. The first remediation added
+`[r for r in rel_rows if r.get("rated", True)]`, but the flattened `rel_rows`
+entries never carry a `rated` key, so the filter kept every row — a gate that
+*looked* closed while doing nothing, the "passes for the wrong reason" pattern
+ADR-010 warns about. Fixed in run-012: `compile_report` reads
+`sd.get("rated", True)` from the source `reliability_scores` entry before the
+`max(Total)`, and reports `"N/A"` when no model is rated. Regression gate:
+`tests/test_reporting.py` (four cases, including the Reviewer's exact
+22.5-vs-21.25 reproduction). The `mypy` dev pin + `[tool.mypy]` config and the
+`views/module_09_reports.py` JSON-heading placeholder were landed at the same
+time; `mypy core` is now green.
+

@@ -82,7 +82,12 @@ def render(ctx: AppContext) -> None:
                 for model_name in models_with_data:
                     try:
                         _, probs = trainer.predict(model_name, dm.X_test)
-                        cal_metrics = cal_analyzer.compute_calibration_metrics(dm.y_test, probs)
+                        model_obj = trainer.trained_models.get(model_name)
+                        cal_metrics = cal_analyzer.compute_calibration_metrics(
+                            dm.y_test,
+                            probs,
+                            classes=getattr(model_obj, "classes_", None),
+                        )
                         cal_ece[model_name] = cal_metrics["ece"]
                     except Exception as exc:
                         # Conventions §3: a blind catch must log. Silently skipping
@@ -96,11 +101,13 @@ def render(ctx: AppContext) -> None:
                         )
 
             # ── Composite score ───────────────────────────────────────────
-            composite = comparator.compute_composite_score(
+            assessed = comparator.rate_models(
                 metrics_dict,
                 robustness_dict=robustness_scores or None,
                 calibration_ece=cal_ece or None,
             )
+            composite = {m: a["composite"] for m, a in assessed.items()}
+            rated_map = {m: a["rated"] for m, a in assessed.items()}
 
             # ── Tabs ──────────────────────────────────────────────────────
             tab1, tab2, tab3, tab4, tab5 = st.tabs(
@@ -247,6 +254,17 @@ def render(ctx: AppContext) -> None:
             with tab5:
                 st.subheader("🏆 Best Model Recommendation")
 
+                unrated = [
+                    m for m, is_rated in rated_map.items() if not is_rated
+                ]
+                if unrated:
+                    st.warning(
+                        "⚠️ **Unrated** (fewer than two measured components, so "
+                        "the composite reflects missing data, not quality): "
+                        f"**{', '.join(unrated)}**. Unrated models are excluded "
+                        "from the ranking below."
+                    )
+
                 if not composite:
                     st.warning("No composite scores available.")
                 else:
@@ -256,14 +274,22 @@ def render(ctx: AppContext) -> None:
 
                     # Recommendation
                     recommendation = comparator.recommend_best_model(
-                        metrics_dict, composite, robustness_scores or None
+                        metrics_dict,
+                        composite,
+                        robustness_scores or None,
+                        rated=rated_map,
                     )
-                    st.success(recommendation["reason"])
+                    if recommendation["best_model"] is not None:
+                        st.success(recommendation["reason"])
+                    else:
+                        st.warning(recommendation["reason"])
 
                     # Ranking table
                     st.markdown("### 📋 Full Model Ranking")
                     ranking_rows = []
-                    for rank, model_name in enumerate(recommendation["ranking"], start=1):
+                    for rank, model_name in enumerate(
+                        recommendation["ranking"], start=1
+                    ):
                         v = metrics_dict[model_name]
                         row = {
                             "Rank": rank,
@@ -281,6 +307,22 @@ def render(ctx: AppContext) -> None:
                     ranking_df = pd.DataFrame(ranking_rows).set_index("Rank")
                     st.dataframe(ranking_df, width="stretch")
 
+                    if recommendation.get("unrated"):
+                        st.markdown("**Not compared (unrated):**")
+                        unrated_df = pd.DataFrame(
+                            [
+                                {
+                                    "Model": m,
+                                    "Composite Score": f"{composite[m]:.1f}",
+                                    "Missing": ", ".join(
+                                        assessed[m]["missing_components"]
+                                    ),
+                                }
+                                for m in recommendation["unrated"]
+                            ]
+                        ).set_index("Model")
+                        st.dataframe(unrated_df, width="stretch")
+
                     # Composite score breakdown
                     st.markdown("### 📖 Score Breakdown")
                     st.markdown(
@@ -291,8 +333,9 @@ def render(ctx: AppContext) -> None:
 | Stress Robustness | 25 % | Module 4 batch test |
 | Calibration (1 – ECE) | 25 % | Computed from test predictions |
 
-> If robustness or calibration data is unavailable the missing weight shifts to the
-> Performance component automatically.
+> A component that could not be measured scores **0 pts** with no weight
+> redistribution. A model with fewer than two measured components is
+> **unrated** and excluded from the ranking.
                         """
                     )
 

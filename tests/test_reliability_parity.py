@@ -278,16 +278,16 @@ def test_confidence_handles_a_zero_max_entropy():
 # ── Missing-component fallbacks ──────────────────────────────────────────────
 
 
-def test_missing_components_take_the_midpoint(baseline: dict, scorer: ReliabilityScorer):
-    """Half the cap, flagged — never silently zero, which would look like a failure."""
-    scores = [scorer.MAX_PERF, scorer.MAX_CAL, scorer.MAX_ROB, scorer.MAX_CONF]
+def test_missing_components_score_zero(baseline: dict, scorer: ReliabilityScorer):
+    """A missing component scores ``missing_component_points`` (0.0) — ADR-018.
+
+    The pre-remediation midpoint (half the cap, ``12.5``) is gone: a model with
+    no measured components must not be propped up by neutral points, because a
+    performance-only model could then outrank one with honest measurements.
+    """
     result = scorer.score_model("empty")
-    for field, cap in zip(
-        ("performance", "calibration", "robustness", "confidence"),
-        scores,
-        strict=True,
-    ):
-        assert result[field] == cap / 2, field
+    for field in ("performance", "calibration", "robustness", "confidence"):
+        assert result[field] == 0.0, field
     assert result["missing_components"] == [
         "Performance",
         "Calibration",
@@ -295,6 +295,7 @@ def test_missing_components_take_the_midpoint(baseline: dict, scorer: Reliabilit
         "Confidence",
     ]
     assert result["available_components"] == []
+    assert result["rated"] is False
 
 
 def test_partial_input_flags_exactly_the_missing_components(scorer: ReliabilityScorer):
@@ -302,6 +303,8 @@ def test_partial_input_flags_exactly_the_missing_components(scorer: ReliabilityS
     result = scorer.score_model("partial", accuracy=0.83, f1=0.81)
     assert result["available_components"] == ["Performance"]
     assert result["missing_components"] == ["Calibration", "Robustness", "Confidence"]
+    assert result["rated"] is False, "one measured component is below the gate"
+    assert result["total"] == scorer._performance_score(0.83, 0.81)
 
 
 def test_a_component_needing_both_of_its_inputs_is_unavailable_with_one():
@@ -309,7 +312,7 @@ def test_a_component_needing_both_of_its_inputs_is_unavailable_with_one():
     scorer = ReliabilityScorer()
     only_accuracy = scorer.score_model("x", accuracy=0.9)
     assert "Performance" in only_accuracy["missing_components"]
-    assert only_accuracy["performance"] == scorer.MAX_PERF / 2
+    assert only_accuracy["performance"] == scorer.policy.missing_component_points
 
     only_f1 = scorer.score_model("x", f1=0.9)
     assert "Performance" in only_f1["missing_components"]
@@ -439,3 +442,41 @@ def test_model_name_does_not_affect_the_score(scorer: ReliabilityScorer):
         scorer.score_model("Logistic Regression", **kwargs)["total"]
         == scorer.score_model("Random Forest", **kwargs)["total"]
     )
+
+
+# ── Monotonicity in evidence ─────────────────────────────────────────────────
+
+
+def test_adding_any_measured_component_never_lowers_the_total(
+    scorer: ReliabilityScorer,
+):
+    """ADR-018: fixed denominator, zero for missing — evidence is monotone.
+
+    Every component contributes a non-negative number of points and the missing
+    value is ``missing_component_points`` (0.0), so replacing "missing" with a
+    measured component can only add to the total.  All 16 subsets of the four
+    components are enumerated rather than sampled, so the property cannot be
+    missed by an unlucky draw.
+    """
+    from itertools import combinations
+
+    components = {
+        "performance": dict(accuracy=0.9, f1=0.85),
+        "calibration": dict(ece=0.1),
+        "robustness": dict(avg_drop=0.2),
+        "confidence": dict(avg_entropy=0.3, hce_rate=0.05),
+    }
+    names = list(components)
+    for size in range(len(names) + 1):
+        for subset in combinations(names, size):
+            kwargs: dict = {}
+            for name in subset:
+                kwargs.update(components[name])
+            base = scorer.score_model("m", **kwargs)["total"]
+            for extra in names:
+                if extra in subset:
+                    continue
+                more = {**kwargs, **components[extra]}
+                assert scorer.score_model("m", **more)["total"] >= base, (
+                    f"adding {extra} to {subset} lowered the total"
+                )

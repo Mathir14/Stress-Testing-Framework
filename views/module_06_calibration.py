@@ -73,9 +73,10 @@ def render(ctx: AppContext) -> None:
                     if hasattr(model, "predict_proba"):
                         probabilities = model.predict_proba(X)
                         y_arr = np.asarray(y)
+                        classes = getattr(model, "classes_", None)
 
                         metrics = calibration_analyzer.compute_calibration_metrics(
-                            y_arr, probabilities, n_bins=n_bins_cal
+                            y_arr, probabilities, classes=classes, n_bins=n_bins_cal
                         )
 
                         quality = calibration_analyzer.get_calibration_quality(metrics["ece"])
@@ -122,7 +123,7 @@ def render(ctx: AppContext) -> None:
 
                         st.markdown("---")
                         hist_fig = calibration_analyzer.plot_confidence_histogram(
-                            y_arr, probabilities
+                            y_arr, probabilities, classes=classes
                         )
                         st.plotly_chart(hist_fig, width="stretch")
                     else:
@@ -154,7 +155,7 @@ def render(ctx: AppContext) -> None:
                         if hasattr(model, "predict_proba"):
                             probs = model.predict_proba(X)
                             all_metrics[mname] = calibration_analyzer.compute_calibration_metrics(
-                                y, probs
+                                y, probs, classes=getattr(model, "classes_", None)
                             )
 
                     if all_metrics:
@@ -222,12 +223,13 @@ def render(ctx: AppContext) -> None:
 
                     if hasattr(model, "predict_proba"):
                         probs = model.predict_proba(X)
+                        model_classes = getattr(model, "classes_", None)
                         class_names = (
                             [str(c) for c in model.classes_] if hasattr(model, "classes_") else None
                         )
 
                         per_class_df = calibration_analyzer.compute_per_class_calibration(
-                            y, probs, class_names=class_names
+                            y, probs, classes=model_classes, class_names=class_names
                         )
 
                         st.dataframe(per_class_df, width="stretch")
@@ -300,21 +302,26 @@ def render(ctx: AppContext) -> None:
 
                     if hasattr(model, "predict_proba"):
                         probs = model.predict_proba(X)
+                        temp_classes = getattr(model, "classes_", None)
 
                         if auto_find:
                             with st.spinner("Searching for optimal temperature..."):
-                                opt_t = calibration_analyzer.find_optimal_temperature(y, probs)
+                                opt_t = calibration_analyzer.find_optimal_temperature(
+                                    y, probs, classes=temp_classes
+                                )
                             st.success(f"✅ Optimal temperature found: **T = {opt_t}**")
                             temperature = opt_t
 
                         # Original metrics
-                        orig_metrics = calibration_analyzer.compute_calibration_metrics(y, probs)
+                        orig_metrics = calibration_analyzer.compute_calibration_metrics(
+                            y, probs, classes=temp_classes
+                        )
                         # Scaled metrics
                         scaled_probs = calibration_analyzer.apply_temperature_scaling(
                             probs, temperature
                         )
                         scaled_metrics = calibration_analyzer.compute_calibration_metrics(
-                            y, scaled_probs
+                            y, scaled_probs, classes=temp_classes
                         )
 
                         st.markdown("---")

@@ -11,14 +11,27 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
+from core.config import ScoringPolicy, get_config
+
+#: Composite components, in display order.  The weights themselves live in
+#: :class:`core.config.ScoringPolicy` (single owner, ADR-018); this tuple only
+#: fixes the order components are presented in.
+_COMPONENTS = ("performance", "robustness", "calibration")
+
 
 class ModelComparator:
     """Aggregates and compares performance across trained models."""
 
-    # Weights used for composite score (sum to 1.0)
-    METRIC_WEIGHT = 0.5  # accuracy / F1
-    ROBUSTNESS_WEIGHT = 0.25  # stress robustness score
-    CALIBRATION_WEIGHT = 0.25  # 1 - ECE (lower ECE → higher component)
+    def __init__(self, policy: ScoringPolicy | None = None) -> None:
+        """Bind the unified scoring policy.
+
+        Args:
+            policy: Composite weights, missing-component policy and the
+                measured-components gate (ADR-018).  ``None`` (the default)
+                uses the process-wide configuration singleton, which is what the
+                app builds.
+        """
+        self.policy = get_config().scoring if policy is None else policy
 
     # ------------------------------------------------------------------ #
     #  Data collection helpers                                             #
@@ -235,71 +248,148 @@ class ModelComparator:
     #  Composite scoring & recommendation                                  #
     # ------------------------------------------------------------------ #
 
+    def _component_scores(
+        self,
+        model: str,
+        vals: dict,
+        robustness_dict: dict | None,
+        calibration_ece: dict | None,
+    ) -> tuple[dict[str, float | None], list[str], list[str]]:
+        """Return the component scores, available names and missing names.
+
+        Every component is scored on a 0-100 scale; an unmeasured component is
+        ``None`` so the caller can apply the fixed-denominator zero policy
+        without confusing it with a genuinely zero score.
+        """
+        components: dict[str, float | None] = {
+            "performance": ((vals["accuracy"] + vals["f1"]) / 2) * 100.0
+        }
+        available = ["performance"]
+        missing: list[str] = []
+
+        if robustness_dict and model in robustness_dict:
+            components["robustness"] = float(robustness_dict[model])
+            available.append("robustness")
+        else:
+            components["robustness"] = None
+            missing.append("robustness")
+
+        if calibration_ece and model in calibration_ece:
+            ece = float(calibration_ece[model])
+            components["calibration"] = max(0.0, 1.0 - ece) * 100.0
+            available.append("calibration")
+        else:
+            components["calibration"] = None
+            missing.append("calibration")
+
+        return components, available, missing
+
+    def rate_models(
+        self,
+        metrics_dict: dict,
+        robustness_dict: dict | None = None,
+        calibration_ece: dict | None = None,
+    ) -> dict[str, dict]:
+        """Assess every model with data against the scoring policy.
+
+        Returns:
+            dict: ``{model -> {composite, rated, available_components,
+            missing_components, components}}``.  ``rated`` is ``True`` when at
+            least :attr:`ScoringPolicy.min_measured_components` components were
+            measured; an unrated model must be shown separately rather than
+            ranked against measured ones (ADR-018).
+        """
+        assessed: dict[str, dict] = {}
+        for model, vals in metrics_dict.items():
+            if not vals["has_data"]:
+                continue
+
+            components, available, missing = self._component_scores(
+                model, vals, robustness_dict, calibration_ece
+            )
+            # Fixed denominator: a missing component contributes exactly zero
+            # with no redistribution (ADR-018), so adding evidence can never
+            # lower a score.
+            total = sum(
+                (0.0 if components[name] is None else components[name])
+                * self.policy.weight_for(name)
+                for name in _COMPONENTS
+            )
+            assessed[model] = {
+                "composite": round(min(max(total, 0.0), 100.0), 2),
+                "rated": len(available) >= self.policy.min_measured_components,
+                "available_components": available,
+                "missing_components": missing,
+                "components": components,
+            }
+        return assessed
+
     def compute_composite_score(
         self,
         metrics_dict: dict,
         robustness_dict: dict | None = None,
         calibration_ece: dict | None = None,
     ) -> dict[str, float]:
+        """Compute a 0-100 composite score per model (fixed denominator).
+
+        Components and weights come from :class:`core.config.ScoringPolicy`:
+        performance (accuracy+F1 average), robustness and calibration.  A
+        component with no evidence scores ``missing_component_points`` (0.0)
+        with **no** redistribution to the remaining components, which keeps the
+        score monotone in the evidence — a model can never lose points by having
+        an extra component measured (ADR-018, C3).
         """
-        Compute a 0–100 composite score per model.
-
-        Weights
-        -------
-        - 50 % performance  : average of F1 + accuracy (0–1 each → 0–50)
-        - 25 % robustness   : 0–100 robustness score → 0–25
-        - 25 % calibration  : (1 – ECE) capped to [0, 1]  → 0–25
-          If robustness / calibration absent, the remaining weight shifts to performance.
-        """
-        composite: dict[str, float] = {}
-
-        for model, vals in metrics_dict.items():
-            if not vals["has_data"]:
-                continue
-
-            # --- Performance component (max 50 points) ---
-            perf = (vals["accuracy"] + vals["f1"]) / 2  # 0–1
-            perf_score = perf * 50
-
-            # --- Robustness component (max 25 points) ---
-            if robustness_dict and model in robustness_dict:
-                rob_score = (robustness_dict[model] / 100) * 25
-                has_rob = True
-            else:
-                rob_score = 0.0
-                has_rob = False
-
-            # --- Calibration component (max 25 points) ---
-            if calibration_ece and model in calibration_ece:
-                ece = calibration_ece[model]
-                cal_score = max(0.0, (1 - ece)) * 25
-                has_cal = True
-            else:
-                cal_score = 0.0
-                has_cal = False
-
-            # Redistribute missing weights to performance
-            missing = (0 if has_rob else 25) + (0 if has_cal else 25)
-            perf_bonus = perf * missing  # proportional bonus
-
-            total = perf_score + perf_bonus + rob_score + cal_score
-            composite[model] = round(min(total, 100), 2)
-
-        return composite
+        return {
+            model: assessment["composite"]
+            for model, assessment in self.rate_models(
+                metrics_dict, robustness_dict, calibration_ece
+            ).items()
+        }
 
     def recommend_best_model(
         self,
         metrics_dict: dict,
         composite: dict[str, float],
         robustness_dict: dict | None = None,
+        rated: dict[str, bool] | None = None,
     ) -> dict:
-        """
-        Return recommendation dict with best model and reason text.
+        """Return recommendation dict with best model and reason text.
+
+        Args:
+            metrics_dict: Compiled performance metrics per model.
+            composite: Composite scores, as returned by
+                :meth:`compute_composite_score`.
+            robustness_dict: Optional robustness scores for the reason text.
+            rated: Optional ``{model -> bool}`` gate.  Only rated models are
+                eligible to be recommended or ranked; unrated models are listed
+                under ``"unrated"`` instead of being silently dropped (ADR-018).
         """
         if not composite:
-            return {"best_model": None, "reason": "No data available."}
+            return {"best_model": None, "reason": "No data available.", "ranking": []}
 
-        best = max(composite, key=lambda m: composite[m])
+        is_rated = (lambda m: True) if rated is None else (
+            lambda m: bool(rated.get(m, True))
+        )
+        eligible = [m for m in composite if is_rated(m)]
+        unrated = sorted(
+            (m for m in composite if not is_rated(m)),
+            key=lambda m: composite[m],
+            reverse=True,
+        )
+
+        if not eligible:
+            return {
+                "best_model": None,
+                "reason": (
+                    "No model has enough measured components to be rated. "
+                    "Run robustness and calibration evaluation before comparing "
+                    "models."
+                ),
+                "ranking": [],
+                "unrated": unrated,
+            }
+
+        best = max(eligible, key=lambda m: composite[m])
         vals = metrics_dict[best]
 
         lines = [
@@ -311,7 +401,7 @@ class ModelComparator:
             lines.append(f"- Robustness Score: {robustness_dict[best]:.1f}/100")
 
         # Runner-up
-        sorted_models = sorted(composite, key=lambda m: composite[m], reverse=True)
+        sorted_models = sorted(eligible, key=lambda m: composite[m], reverse=True)
         if len(sorted_models) > 1:
             runner = sorted_models[1]
             lines.append(
@@ -324,6 +414,7 @@ class ModelComparator:
             "composite_score": composite[best],
             "reason": "\n".join(lines),
             "ranking": sorted_models,
+            "unrated": unrated,
         }
 
     # ------------------------------------------------------------------ #

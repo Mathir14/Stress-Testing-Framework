@@ -41,6 +41,7 @@ __all__ = [
     "OVERRIDABLE_FIELDS",
     "StressBounds",
     "ReliabilityWeights",
+    "ScoringPolicy",
     "ArtifactPolicy",
     "AppConfig",
     "get_config",
@@ -178,6 +179,99 @@ class ReliabilityWeights:
 
 
 @dataclass(frozen=True)
+class ScoringPolicy:
+    """The one owner of "how good is this model" policy (ADR-018).
+
+    Reliability weights (``ReliabilityWeights``) own the component caps and the
+    letter-grade bands.  This section owns everything that must not be
+    restated per module: the fixed-denominator composite weights, the
+    zero-credit-for-missing policy, the minimum measured-components gate, the
+    ECE quality bands and the robustness severity bands.
+
+    Attributes:
+        composite_weights: ``(component, weight)`` pairs for the comparison
+            composite; weights sum to ``1.0``.  Components are ``performance``,
+            ``robustness`` and ``calibration``.
+        missing_component_points: Points awarded to a component with no
+            evidence.  Binding ADR-018 value is ``0.0`` — a missing component
+            scores zero with **no redistribution**.
+        min_measured_components: Fewest measured components a model needs
+            before it is ``rated`` and eligible for ranking.
+        ece_quality: Ascending ``(strict_upper_bound, label)`` pairs.
+        severity_bands: Ascending ``(strict_upper_bound, label)`` pairs applied
+            to a percentage performance drop.
+        quality_fallthrough: Label when an ECE exceeds every band.
+        severity_fallthrough: Label when a drop exceeds every band.
+    """
+
+    composite_weights: tuple[tuple[str, float], ...] = (
+        ("performance", 0.5),
+        ("robustness", 0.25),
+        ("calibration", 0.25),
+    )
+    missing_component_points: float = 0.0
+    min_measured_components: int = 2
+    ece_quality: tuple[tuple[float, str], ...] = (
+        (0.03, "Excellent"),
+        (0.07, "Good"),
+        (0.15, "Moderate"),
+    )
+    severity_bands: tuple[tuple[float, str], ...] = (
+        (5.0, "Low"),
+        (15.0, "Medium"),
+        (30.0, "High"),
+    )
+    quality_fallthrough: str = "Poor"
+    severity_fallthrough: str = "Critical"
+
+    def resolve_ece_quality(self, ece: float) -> str:
+        """Classify an expected-calibration-error value.
+
+        Args:
+            ece: Expected calibration error (lower is better).
+
+        Returns:
+            str: The first band label whose strict upper bound the value is
+            below, else :attr:`quality_fallthrough`.
+        """
+        value = float(ece)
+        for threshold, label in self.ece_quality:
+            if value < threshold:
+                return label
+        return self.quality_fallthrough
+
+    def resolve_severity(self, drop_pct: float) -> str:
+        """Classify a percentage performance drop.
+
+        Args:
+            drop_pct: Performance drop as a percentage (higher is worse).
+
+        Returns:
+            str: The first band label whose strict upper bound the value is
+            below, else :attr:`severity_fallthrough`.
+        """
+        value = float(drop_pct)
+        for threshold, label in self.severity_bands:
+            if value < threshold:
+                return label
+        return self.severity_fallthrough
+
+    def weight_for(self, component: str) -> float:
+        """Return the composite weight for ``component`` (0.0 when absent).
+
+        Args:
+            component: One of ``performance``, ``robustness`` or ``calibration``.
+
+        Returns:
+            float: The configured weight, or ``0.0`` for an unknown component.
+        """
+        for name, weight in self.composite_weights:
+            if name == component:
+                return float(weight)
+        return 0.0
+
+
+@dataclass(frozen=True)
 class ArtifactPolicy:
     """Filename, containment and attestation policy for model artifacts.
 
@@ -213,6 +307,9 @@ class AppConfig:
         stress_bounds: Accepted parameter ranges for the stress kernel.
         reliability: Component caps and grade boundaries.
         artifacts: Model-artifact policy.
+        scoring: The unified scoring policy (ADR-018).  Defaulted so an
+            ``AppConfig`` built before ADR-018 keeps its published scores for
+            every field the policy did not change.
         log_level: Root log level name.
         random_seed: Seed for the per-run generator, or ``None`` for unseeded.
     """
@@ -220,6 +317,7 @@ class AppConfig:
     stress_bounds: StressBounds
     reliability: ReliabilityWeights
     artifacts: ArtifactPolicy
+    scoring: ScoringPolicy = ScoringPolicy()
     log_level: str = "INFO"
     random_seed: int | None = None
 

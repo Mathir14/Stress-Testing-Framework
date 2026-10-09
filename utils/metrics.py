@@ -5,9 +5,25 @@ Helper functions for calculating various metrics
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TypedDict
 
 import numpy as np
+
+
+class HighConfidenceErrorInfo(TypedDict):
+    """Structured result of :func:`identify_high_confidence_errors`.
+
+    Attributes:
+        indices: Positions of the high-confidence misclassifications.
+        count: Number of high-confidence misclassifications.
+        percentage: ``count`` as a percentage of the batch.
+        avg_confidence: Mean confidence over the offending rows, or ``0.0``.
+    """
+
+    indices: np.ndarray
+    count: int
+    percentage: float
+    avg_confidence: float
 
 
 def get_confidence_scores(probabilities: np.ndarray) -> np.ndarray:
@@ -31,17 +47,22 @@ def get_prediction_entropy(probabilities: np.ndarray) -> np.ndarray:
         probabilities: Array of prediction probabilities
 
     Returns:
-        Array of entropy values
+        Array of Shannon entropy values in **bits** (base-2).  The reliability
+        scorer normalises by ``log2(n_classes)`` bits, so the units must match
+        (ADR-018); dots/nats would inflate the confidence component.
     """
-    # Avoid log(0)
+    probabilities = np.asarray(probabilities, dtype=float)
     probabilities = np.clip(probabilities, 1e-10, 1)
-    entropy = -np.sum(probabilities * np.log(probabilities), axis=1)
+    entropy = -np.sum(probabilities * np.log2(probabilities), axis=1)
     return entropy
 
 
 def identify_high_confidence_errors(
-    y_true: np.ndarray, y_pred: np.ndarray, probabilities: np.ndarray, threshold: float = 0.8
-) -> dict[str, Any]:
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    probabilities: np.ndarray,
+    threshold: float = 0.8,
+) -> HighConfidenceErrorInfo:
     """
     Identify high-confidence misclassifications
 
@@ -52,58 +73,21 @@ def identify_high_confidence_errors(
         threshold: Confidence threshold
 
     Returns:
-        Dictionary with high-confidence error information
+        HighConfidenceErrorInfo: Structured result.  Callers must read
+        ``["count"]`` for the number of errors; ``len(result)`` is the number of
+        keys, not the number of errors.
     """
     confidence = get_confidence_scores(probabilities)
-    errors = y_true != y_pred
+    errors = np.asarray(y_true) != np.asarray(y_pred)
 
     high_conf_errors = (confidence >= threshold) & errors
+    count = int(np.count_nonzero(high_conf_errors))
 
     return {
         "indices": np.where(high_conf_errors)[0],
-        "count": np.sum(high_conf_errors),
-        "percentage": (np.sum(high_conf_errors) / len(y_true)) * 100,
+        "count": count,
+        "percentage": (count / len(y_true)) * 100,
         "avg_confidence": (
-            np.mean(confidence[high_conf_errors]) if np.sum(high_conf_errors) > 0 else 0
+            float(np.mean(confidence[high_conf_errors])) if count > 0 else 0.0
         ),
     }
-
-
-def calculate_brier_score(y_true: np.ndarray, probabilities: np.ndarray) -> float:
-    """
-    Calculate Brier score for multi-class classification
-
-    Args:
-        y_true: True labels
-        probabilities: Prediction probabilities
-
-    Returns:
-        Brier score
-    """
-    n_classes = probabilities.shape[1]
-    y_true_binary = np.zeros((len(y_true), n_classes))
-
-    for i, label in enumerate(y_true):
-        y_true_binary[i, label] = 1
-
-    return np.mean(np.sum((probabilities - y_true_binary) ** 2, axis=1))
-
-
-def get_confidence_bins(
-    confidence: np.ndarray, n_bins: int = 10
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Bin confidence scores
-
-    Args:
-        confidence: Array of confidence scores
-        n_bins: Number of bins
-
-    Returns:
-        Bin edges and bin assignments
-    """
-    bins = np.linspace(0, 1, n_bins + 1)
-    bin_indices = np.digitize(confidence, bins) - 1
-    bin_indices = np.clip(bin_indices, 0, n_bins - 1)
-
-    return bins, bin_indices

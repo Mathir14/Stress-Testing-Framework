@@ -11,15 +11,19 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
+from core.config import ScoringPolicy, get_config
+from core.errors import ValidationError
+
 
 class PostStressAnalyzer:
     """
     Analyzes stress test results to provide comprehensive robustness insights
     """
 
-    def __init__(self) -> None:
+    def __init__(self, policy: ScoringPolicy | None = None) -> None:
         self.stress_results = {}
         self.robustness_scores = {}
+        self.policy = get_config().scoring if policy is None else policy
 
     def add_stress_result(
         self, test_name: str, result: Dict[str, Any], model_name: str = "default"
@@ -50,26 +54,32 @@ class PostStressAnalyzer:
         for test_name, result in results.items():
             self.add_stress_result(test_name, result, model_name)
 
-    def calculate_robustness_score(
+    def _compute_robustness_breakdown(
         self, model_name: str = "default", weights: Optional[Dict] = None
-    ) -> float:
-        """
-        Calculate overall robustness score based on stress test results
+    ) -> Dict[str, float] | None:
+        """Compute the robustness breakdown **without mutating any state**.
+
+        This is the single source of the robustness arithmetic.  The caching
+        entry point :meth:`calculate_robustness_score` and the read-only getters
+        (:meth:`plot_robustness_radar`, :meth:`compare_model_robustness`) all
+        delegate here, so a getter can never write into
+        :attr:`robustness_scores` (ADR-019, M5).
 
         Args:
-            model_name: Name of the model
-            weights: Optional weights for different metrics
+            model_name: Name of the model.
+            weights: Optional per-dimension weights; defaults to the balanced
+                ``0.4 / 0.3 / 0.3`` split.
 
         Returns:
-            Robustness score (0-100, higher is better)
+            dict | None: The breakdown, or ``None`` when the model has no stored
+            stress results.  The dict is never ``None``-valued internally.
         """
         if model_name not in self.stress_results:
-            return 0.0
+            return None
 
         results = self.stress_results[model_name]
-
         if not results:
-            return 0.0
+            return None
 
         # Default weights
         if weights is None:
@@ -86,17 +96,27 @@ class PostStressAnalyzer:
                 retention = result["accuracy_stressed"] / result["accuracy_original"]
                 acc_retentions.append(min(retention, 1.0))  # Cap at 1.0
 
-        avg_retention = np.mean(acc_retentions) if acc_retentions else 0
+        avg_retention = float(np.mean(acc_retentions)) if acc_retentions else 0.0
 
         # Prediction stability (average prediction agreement)
         agreements = [result["prediction_agreement"] for result in results.values()]
-        avg_agreement = np.mean(agreements) if agreements else 0
+        avg_agreement = float(np.mean(agreements)) if agreements else 0.0
 
-        # Performance consistency (1 - coefficient of variation of accuracy)
+        # Performance consistency (1 - coefficient of variation of accuracy).
+        # The coefficient of variation is undefined for a zero mean; guard it
+        # explicitly rather than letting ``nan`` propagate and relying on the
+        # clip to mask it (ADR-019, m6).
         stressed_accs = [result["accuracy_stressed"] for result in results.values()]
         if len(stressed_accs) > 1:
-            consistency = 1 - (np.std(stressed_accs) / np.mean(stressed_accs))
-            consistency = max(0, min(consistency, 1))  # Clip to [0, 1]
+            mean_acc = float(np.mean(stressed_accs))
+            std_acc = float(np.std(stressed_accs))
+            if std_acc == 0:
+                consistency = 1.0
+            elif mean_acc == 0:
+                consistency = 0.0
+            else:
+                consistency = 1.0 - (std_acc / mean_acc)
+            consistency = max(0.0, min(consistency, 1.0))  # Clip to [0, 1]
         else:
             consistency = 1.0
 
@@ -107,14 +127,51 @@ class PostStressAnalyzer:
             + weights["performance_consistency"] * consistency
         ) * 100
 
-        self.robustness_scores[model_name] = {
+        return {
             "overall_score": score,
             "accuracy_retention": avg_retention * 100,
             "prediction_stability": avg_agreement * 100,
             "performance_consistency": consistency * 100,
         }
 
-        return score
+    def calculate_robustness_score(
+        self, model_name: str = "default", weights: Optional[Dict] = None
+    ) -> float:
+        """
+        Calculate overall robustness score based on stress test results.
+
+        This method is the **only** place the computed breakdown is cached in
+        :attr:`robustness_scores` (ADR-019, M5).
+
+        Args:
+            model_name: Name of the model.
+            weights: Optional weights for different metrics.
+
+        Returns:
+            Robustness score (0-100, higher is better).
+
+        Raises:
+            ValidationError: ``model_name`` has no stored stress results, so no
+                score exists.  Returning a sentinel ``0.0`` previously let a
+                typo silently masquerade as a catastrophic model and then
+                ``KeyError`` at the next getter (ADR-019, m2).
+        """
+        breakdown = self._compute_robustness_breakdown(model_name, weights)
+
+        if breakdown is None:
+            if model_name not in self.stress_results:
+                raise ValidationError(
+                    f"No stress test results are stored for model {model_name!r}. "
+                    "Run a stress test for this model before scoring it.",
+                    field="model_name",
+                    value=model_name,
+                    context={"model_name": model_name},
+                )
+            # The model is known but has an empty result set: a genuine zero.
+            return 0.0
+
+        self.robustness_scores[model_name] = breakdown
+        return float(breakdown["overall_score"])
 
     def get_vulnerability_analysis(self, model_name: str = "default") -> pd.DataFrame:
         """
@@ -152,15 +209,13 @@ class PostStressAnalyzer:
         return df
 
     def _classify_severity(self, drop_pct: float) -> str:
-        """Classify performance drop severity"""
-        if drop_pct < 5:
-            return "Low"
-        elif drop_pct < 15:
-            return "Medium"
-        elif drop_pct < 30:
-            return "High"
-        else:
-            return "Critical"
+        """Classify performance-drop severity from the scoring policy.
+
+        The bands live in :class:`core.config.ScoringPolicy` so the stress
+        severity scale and the reliability/report scales cannot drift apart
+        (ADR-018, M7).
+        """
+        return self.policy.resolve_severity(drop_pct)
 
     def get_stress_type_summary(self, model_name: str = "default") -> pd.DataFrame:
         """
@@ -223,19 +278,19 @@ class PostStressAnalyzer:
         """
         Create radar chart showing robustness across dimensions
 
+        Read-only: the breakdown is computed without caching, so this getter
+        never writes into :attr:`robustness_scores` (ADR-019, M5).
+
         Args:
             model_name: Name of the model
 
         Returns:
-            Plotly figure
+            Plotly figure, or ``None`` when the model has no stored results
         """
-        if model_name not in self.robustness_scores:
-            self.calculate_robustness_score(model_name)
+        breakdown = self._compute_robustness_breakdown(model_name)
 
-        if model_name not in self.robustness_scores:
+        if breakdown is None:
             return None
-
-        scores = self.robustness_scores[model_name]
 
         categories = [
             "Accuracy Retention",
@@ -244,9 +299,9 @@ class PostStressAnalyzer:
         ]
 
         values = [
-            scores["accuracy_retention"],
-            scores["prediction_stability"],
-            scores["performance_consistency"],
+            breakdown["accuracy_retention"],
+            breakdown["prediction_stability"],
+            breakdown["performance_consistency"],
         ]
 
         fig = go.Figure()
@@ -330,24 +385,22 @@ class PostStressAnalyzer:
         if model_names is None:
             model_names = list(self.stress_results.keys())
 
-        # Calculate scores for all models
+        # Calculate scores for all models (purely; no caching side effect)
         comparison_data = []
 
         for model_name in model_names:
-            if model_name in self.stress_results:
-                self.calculate_robustness_score(model_name)
-
-                if model_name in self.robustness_scores:
-                    scores = self.robustness_scores[model_name]
-                    comparison_data.append(
-                        {
-                            "Model": model_name,
-                            "Overall Score": scores["overall_score"],
-                            "Accuracy Retention": scores["accuracy_retention"],
-                            "Prediction Stability": scores["prediction_stability"],
-                            "Consistency": scores["performance_consistency"],
-                        }
-                    )
+            breakdown = self._compute_robustness_breakdown(model_name)
+            if breakdown is None:
+                continue
+            comparison_data.append(
+                {
+                    "Model": model_name,
+                    "Overall Score": breakdown["overall_score"],
+                    "Accuracy Retention": breakdown["accuracy_retention"],
+                    "Prediction Stability": breakdown["prediction_stability"],
+                    "Consistency": breakdown["performance_consistency"],
+                }
+            )
 
         if not comparison_data:
             return None

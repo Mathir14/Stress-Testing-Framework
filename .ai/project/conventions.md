@@ -39,6 +39,11 @@ machine-checkable (`tests/test_architecture.py`).
   failure mode is a typed `FrameworkError`; if a function's docstring declares
   `ValidationError` as its only raise, then every input — including degenerate
   ones like duplicate column labels — raises it (reviewer MAJOR-2).
+- The boundary extends to the domain services: a caller mistake (unknown model,
+  untrained model, unserialisable report, unmappable calibration label) raises
+  `UnknownModelError` / `ModelNotTrainedError` / `ReportExportError` /
+  `ValidationError`, never a bare `ValueError`/`TypeError`/`KeyError`, because
+  `views.reporters.render_errors` catches only `FrameworkError` (ADR-019).
 
 ## 4. Logging
 
@@ -61,6 +66,14 @@ machine-checkable (`tests/test_architecture.py`).
   `random_state: int`) and MUST NOT call the global `np.random`/`random` state.
 - All tunables come from `core.config`; magic numbers in domain code require an
   inline justification comment.
+- Getters MUST NOT mutate object state. A read path that caches (e.g.
+  `PostStressAnalyzer.calculate_robustness_score`) is the explicit mutator;
+  `plot_robustness_radar` / `compare_model_robustness` delegate to the pure
+  `_compute_robustness_breakdown` and never write `robustness_scores` (ADR-019).
+- "More evidence can never lower a score" is a binding property of the scoring
+  functions: missing components score `ScoringPolicy.missing_component_points`
+  with no redistribution, and entropy is measured in bits so unit mismatches
+  cannot inflate a component (ADR-018).
 - Values interpolated into HTML MUST pass through `html.escape(str(v), quote=True)`.
 
 ## 6. Security

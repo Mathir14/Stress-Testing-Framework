@@ -780,3 +780,137 @@ Numeric defaults referenced here are frozen by ADR-005 parity tests.
   asks about contents and none about flags, still passes.
   `test_the_memory_gate_would_catch_each_removed_buffer` asserts the bounds can
   still fail.
+
+---
+
+## ADR-017 — Calibration operates in model class-index space; one Brier owner in `modules/`
+
+- **Status:** Accepted
+- **Context:** Run-011 Critic C1: the target is **never encoded**, yet every
+  calibration path assumed labels were already `0..K-1` and called `int(label)`,
+  so a model trained on string or arbitrary-integer labels was silently
+  mis-scored. Run-011 m7: two Brier implementations (`utils.calculate_brier_score`
+  and `_multiclass_brier`) disagreed about label guarding.
+- **Decision:**
+  1. The calibration/Brier path operates in the model's **class-index space**.
+     `modules/calibration_module.align_target_indices(y_true, classes)` maps raw
+     labels to probability-column indices via the estimator's `classes_`.
+  2. **`classes=None` means strict identity** — labels must be exactly `0..K-1`,
+     otherwise a typed `ValidationError` is raised. A call site that forgets to
+     thread `classes` fails loudly instead of silently mis-scoring.
+  3. `multiclass_brier` is the framework's **single** Brier implementation;
+     `utils.calculate_brier_score` is deleted. `utils/` must not import
+     `core/` or `modules/` (architecture.md §2.1), so the aligner cannot live in
+     `utils/`.
+- **Rationale:** Raw labels are preserved everywhere except the calibration
+  boundary; mapping at the boundary fixes the defect without globally encoding
+  the target or changing the training/`predict`/report label space. The strict
+  `classes=None` rule turns a forgotten `classes` argument from a silent
+  mis-score into a raised error, which is the observable failure M8 needs.
+- **Consequences:** `compute_calibration_metrics`, `compute_per_class_calibration`,
+  `plot_confidence_histogram` and `find_optimal_temperature` gain keyword-only
+  `classes`; every view call site threads `getattr(model, "classes_", None)`;
+  `views/module_03_confidence.py` imports `multiclass_brier` from
+  `modules/calibration_module` instead of the removed utils symbol.
+- **Deferred:** none.
+
+---
+
+## ADR-018 — Unified monotone scoring policy: fixed denominator, zero for missing, bits entropy
+
+- **Status:** Accepted
+- **Context:** Run-011 C3/M1: `compute_composite_score` renormalised over
+  available components, and reliability scored unavailable components at a
+  neutral `12.5` midpoint. Both invert rankings — adding a mediocre robustness
+  result lowered a model's score (`45/50×100 = 90.0` → `75/100×100 = 75.0` under
+  the Critic's own renormalisation remedy, which was rejected for this reason).
+  Run-011 M7: the scoring policy was duplicated across modules and contradicted
+  itself.
+- **Decision:**
+  1. **`core.config.ScoringPolicy` is the single owner** of composite weights
+     (performance 0.5, robustness 0.25, calibration 0.25), the missing-component
+     policy, the minimum-measured-components gate (`2`), ECE quality bands and
+     robustness severity bands. Reliability weights/grade bands stay in
+     `ReliabilityWeights`.
+  2. **Fixed denominator with zero credit for missing and no redistribution**:
+     `total = perf + rob + cal`, missing component = `missing_component_points`
+     (`0.0`). Every component is ≥ 0, so adding evidence can never lower a score.
+     Reliability adopts the same policy in `score_model`, replacing the `12.5`
+     midpoint.
+  3. **`rated` gate**: a model with fewer than `min_measured_components` measured
+     components is `rated=False`, listed separately, and excluded from
+     best-model/ranking calls — never silently dropped, never ranked as if its
+     low total measured quality.
+  4. **Entropy is bits at the metric boundary**: `get_prediction_entropy` uses
+     `np.log2`; the confidence component normalises by `log2(n_classes)` bits so
+     the units match. Uniform binary confidence therefore scores `12.5`.
+- **Rationale:** Monotonicity is the property that makes "more evidence cannot
+  hurt" true by construction; the fixed denominator is the minimal form that has
+  it. One policy owner removes the M7 duplication, and the gate makes the
+  missing-data story visible instead of silently warping rankings.
+- **Consequences:** `ReliabilityScorer.score_model` and
+  `ModelComparator.compute_composite_score` change semantics; the reliability
+  baseline fixture `tests/fixtures/reliability_baseline.json` is regenerated;
+  `tests/test_reliability_parity.py` is rewritten to the zero-missing policy;
+  `calculate_brier_score`/`get_confidence_bins`-adjacent copy in the views is
+  updated ("neutral 12.5" → "not measured, 0 pts"); module_03's "Avg Entropy"
+  display now reads bits.
+
+---
+
+## ADR-019 — Complete error boundary, pure getters, split guard
+
+- **Status:** Accepted
+- **Context:** Run-011 M2/M4/M5/m2/m6: bare `ValueError`/`TypeError` escaped
+  domain modules (`model_module.py:81,121,398`, `reporting_module.py:380`);
+  `calculate_robustness_score` returned `0.0` for an unknown model and the next
+  getter `KeyError`-ed; `plot_robustness_radar` and `compare_model_robustness`
+  mutated `robustness_scores` as a side effect; `split_data` stratified without a
+  class-frequency guard; `1 − std/mean` yielded `nan` at zero mean (masked by
+  the clip).
+- **Decision:**
+  1. **New typed errors**: `UnknownModelError`, `ModelNotTrainedError`,
+     `ReportExportError`, all direct `FrameworkError` subclasses shared by
+     `core/errors.__all__`.
+  2. **`model_module`** raises `UnknownModelError`/`ModelNotTrainedError`
+     instead of `ValueError`; **`reporting_module.export_to_json`** wraps any
+     serialisation `TypeError` as `ReportExportError`.
+  3. **Pure breakdown helper**: `PostStressAnalyzer._compute_robustness_breakdown`
+     is the single source of the robustness arithmetic; `plot_robustness_radar`
+     and `compare_model_robustness` delegate to it and never write to
+     `robustness_scores` — only `calculate_robustness_score` caches.
+  4. **`calculate_robustness_score` raises `ValidationError` for an unknown
+     model**; the getters return `None`/empty for it.
+  5. **`split_data` stratify guard**: `_stratify_argument` disables stratification
+     (with a logged warning) when any class has fewer than two members or there
+     are ten or more classes, and wraps any residual `train_test_split`
+     `ValueError` as `DatasetError`.
+  6. **Zero-mean consistency guard**: the breakdown handles `std==0` (→ 1.0) and
+     `mean==0` with `std>0` (→ 0.0) explicitly; the `nan`-masking clip is gone.
+- **Rationale:** Domain failures must cross module boundaries as typed errors
+  (ADR-004), getters must be pure (side effects in a read path make a cache write
+  order-dependent), and the stratify guard is deterministic where sklearn's bare
+  `ValueError` is not.
+- **Consequences:** Views already catch `FrameworkError`; four sites change from
+  bare-exception escapes to typed, renderable errors. No public ability is lost.
+
+---
+
+## ADR-020 — Prediction/ECE/entropy caching declined; §8 cache bound reaffirmed
+
+- **Status:** Accepted
+- **Context:** Run-011 M6 proposed caching predicted probabilities, ECE and
+  entropy so per-render recomputation could be skipped.
+- **Decision:** **Declined and deferred.** A cache at the prediction/ECE/entropy
+  boundary needs a stable key; models are identified by mutable name and input
+  frames are unhashable, so any `st.cache_data` key can silently serve stale
+  scores — a correctness hazard strictly worse than the recomputation it removes.
+  Architecture.md §8 already bounds caching to figure generation; that bound is
+  reaffirmed and unchanged in this milestone. A stable cache-key precondition
+  (model identity hash + input frame digest) is recorded as a roadmap backlog
+  item for a future ADR.
+- **Rationale:** A cache that can be stale *silently* is worse than no cache: the
+  directory cost is a recompute, while the stale-score cost is a wrong published
+  result that reproduces identically until the cache is evicted.
+- **Consequences:** No caching layer added; per-render recomputation remains the
+  documented behaviour. No public signature changes.

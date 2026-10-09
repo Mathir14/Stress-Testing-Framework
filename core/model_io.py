@@ -460,6 +460,7 @@ class ModelArtifactStore:
 
         try:
             self.policy.root_dir.mkdir(parents=True, exist_ok=True)
+            tmp_path: str | None
             handle, tmp_path = tempfile.mkstemp(
                 prefix=".artifact-", suffix=".tmp", dir=str(self.policy.root_dir)
             )

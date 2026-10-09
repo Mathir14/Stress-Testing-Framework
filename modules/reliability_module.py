@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
-from core.config import ReliabilityWeights, get_config
+from core.config import ReliabilityWeights, ScoringPolicy, get_config
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Grade helpers
@@ -57,16 +57,24 @@ class ReliabilityScorer:
     MAX_ROB = _DEFAULT_WEIGHTS.max_rob
     MAX_CONF = _DEFAULT_WEIGHTS.max_conf
 
-    def __init__(self, weights: ReliabilityWeights | None = None) -> None:
+    def __init__(
+        self,
+        weights: ReliabilityWeights | None = None,
+        policy: ScoringPolicy | None = None,
+    ) -> None:
         """Bind the scoring policy.
 
         Args:
-            weights: Policy to score against.  ``None`` (the default) uses the
-                process-wide configuration singleton, which is what every view
-                does — ``ReliabilityScorer()`` is the only construction the app
-                performs.
+            weights: Component caps and grade policy.  ``None`` (the default)
+                uses the process-wide configuration singleton, which is what
+                every view does — ``ReliabilityScorer()`` is the only
+                construction the app performs.
+            policy: Unified scoring policy supplying the missing-component
+                points and the measured-components gate (ADR-018).  ``None``
+                uses the process-wide configuration singleton.
         """
         self.weights = get_config().reliability if weights is None else weights
+        self.policy = get_config().scoring if policy is None else policy
         self.MAX_PERF = self.weights.max_perf
         self.MAX_CAL = self.weights.max_cal
         self.MAX_ROB = self.weights.max_rob
@@ -139,25 +147,29 @@ class ReliabilityScorer:
         """
         Compute the reliability breakdown for one model.
 
-        Any unavailable component defaults to the component midpoint,
-        and is flagged so the UI can warn the user.
+        Every unavailable component scores :attr:`ScoringPolicy.missing_component_points`
+        (``0.0`` by binding ADR-018) and is flagged so the UI can warn the user.
+        A model with fewer than :attr:`ScoringPolicy.min_measured_components`
+        measured components is marked ``rated=False`` and must not be ranked
+        against measured models.
 
         Returns
         -------
         dict with keys:
           performance, calibration, robustness, confidence,
-          total, grade, colour,
+          total, grade, colour, rated,
           available_components, missing_components,
           details  (sub-dict of raw inputs)
         """
         available, missing = [], []
+        missing_points = self.policy.missing_component_points
 
         # ── Performance ────────────────────────────────────────────────────
         if accuracy is not None and f1 is not None:
             perf_pts = self._performance_score(accuracy, f1)
             available.append("Performance")
         else:
-            perf_pts = self.MAX_PERF / 2  # neutral 12.5
+            perf_pts = missing_points
             missing.append("Performance")
 
         # ── Calibration ────────────────────────────────────────────────────
@@ -165,7 +177,7 @@ class ReliabilityScorer:
             cal_pts = self._calibration_score(ece)
             available.append("Calibration")
         else:
-            cal_pts = self.MAX_CAL / 2
+            cal_pts = missing_points
             missing.append("Calibration")
 
         # ── Robustness ─────────────────────────────────────────────────────
@@ -173,7 +185,7 @@ class ReliabilityScorer:
             rob_pts = self._robustness_score(avg_drop)
             available.append("Robustness")
         else:
-            rob_pts = self.MAX_ROB / 2
+            rob_pts = missing_points
             missing.append("Robustness")
 
         # ── Confidence quality ─────────────────────────────────────────────
@@ -184,11 +196,12 @@ class ReliabilityScorer:
             conf_pts = self._confidence_score(avg_entropy, hce_rate, max_entropy)
             available.append("Confidence")
         else:
-            conf_pts = self.MAX_CONF / 2
+            conf_pts = missing_points
             missing.append("Confidence")
 
         total = round(perf_pts + cal_pts + rob_pts + conf_pts, 2)
         grade, colour = self._grade(total)
+        rated = len(available) >= self.policy.min_measured_components
 
         return {
             "model_name": model_name,
@@ -199,6 +212,7 @@ class ReliabilityScorer:
             "total": total,
             "grade": grade,
             "colour": colour,
+            "rated": rated,
             "available_components": available,
             "missing_components": missing,
             "details": {
@@ -384,21 +398,36 @@ class ReliabilityScorer:
         return fig
 
     def plot_total_bar(self, scores_dict: dict) -> go.Figure:
-        """Simple scored bar sorted by total, coloured by grade."""
+        """Simple scored bar sorted by total, coloured by grade.
+
+        Measured models are ranked ahead of unrated ones (ADR-018): a model with
+        fewer than ``min_measured_components`` components has a low total that is
+        evidence about missing data, not about the model.
+        """
         sorted_items = sorted(
-            scores_dict.items(), key=lambda x: x[1]["total"], reverse=True
+            scores_dict.items(),
+            key=lambda x: (bool(x[1].get("rated", True)), x[1]["total"]),
+            reverse=True,
         )
         models = [i[0] for i in sorted_items]
         totals = [i[1]["total"] for i in sorted_items]
-        colours = [i[1]["colour"] for i in sorted_items]
-        grades = [i[1]["grade"] for i in sorted_items]
+        colours = [
+            i[1]["colour"] if i[1].get("rated", True) else "#999999"
+            for i in sorted_items
+        ]
+        labels = [
+            f"{i[1]['total']:.1f}  ({i[1]['grade']})"
+            if i[1].get("rated", True)
+            else f"{i[1]['total']:.1f}  (Unrated)"
+            for i in sorted_items
+        ]
 
         fig = go.Figure(
             go.Bar(
                 x=models,
                 y=totals,
                 marker_color=colours,
-                text=[f"{t:.1f}  ({g})" for t, g in zip(totals, grades, strict=True)],
+                text=labels,
                 textposition="outside",
             )
         )
@@ -414,16 +443,24 @@ class ReliabilityScorer:
     # ── Summary helpers ──────────────────────────────────────────────────────
 
     def build_summary_df(self, scores_dict: dict) -> pd.DataFrame:
-        """Return a tidy DataFrame for tabular display."""
+        """Return a tidy DataFrame for tabular display.
+
+        Measured models sort ahead of unrated ones (ADR-018), and the ``Rated``
+        column surfaces why a low total belongs to a model that simply lacks
+        data rather than one that performed poorly.
+        """
         rows = []
         for model_name, sd in sorted(
-            scores_dict.items(), key=lambda x: x[1]["total"], reverse=True
+            scores_dict.items(),
+            key=lambda x: (bool(x[1].get("rated", True)), x[1]["total"]),
+            reverse=True,
         ):
             rows.append(
                 {
                     "Model": model_name,
                     "Total": f"{sd['total']:.1f}",
                     "Grade": sd["grade"],
+                    "Rated": "Yes" if sd.get("rated", True) else "No",
                     "Performance": f"{sd['performance']:.1f} / 25",
                     "Calibration": f"{sd['calibration']:.1f} / 25",
                     "Robustness": f"{sd['robustness']:.1f} / 25",
@@ -441,6 +478,17 @@ class ReliabilityScorer:
         """Return a list of actionable recommendation strings for one model."""
         recs = []
         sd = score_dict
+
+        # Unrated models must not be judged on their (artifactually low) totals.
+        if not sd.get("rated", True):
+            missing = ", ".join(sd.get("missing_components", [])) or "several components"
+            recs.append(
+                "⚠️ **Not rated.** This model is missing too many components "
+                f"({missing}) to score reliably. The low total reflects missing "
+                "data, not model quality — provide the missing evaluations "
+                "(robustness / calibration / confidence) before comparing it."
+            )
+            return recs
 
         # Performance
         if sd["performance"] < 15:

@@ -31,3 +31,15 @@ select = ["E4", "E7", "E9", "F", "B", "I"]
 # would import streamlit unconditionally — turning a clean skip into a
 # collection error on a trimmed environment.
 "tests/test_reporters.py" = ["I001"]
+
+[tool.mypy]
+# CPython floor matches the devcontainer target (architecture.md §1).
+python_version = "3.11"
+# The pinned scientific stack (numpy/pandas/scikit-learn/plotly) ships no type
+# information and no stub packages are installed — ADR-007 keeps the dependency
+# set frozen — so third-party imports are treated as `Any` rather than reported.
+# `mypy` is a local developer aid: no CI type gate exists, and the known
+# annotation debt in the legacy `modules/` subtree is tracked in roadmap
+# backlog 11. This config lands the run-011 m4 approval (pin + config) without
+# asserting a green baseline the tree does not yet have.
+ignore_missing_imports = true

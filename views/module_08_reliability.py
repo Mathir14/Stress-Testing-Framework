@@ -56,7 +56,12 @@ def render(ctx: AppContext) -> None:
             for mn in trainer.trained_models:
                 try:
                     _, probs = trainer.predict(mn, dm.X_test)
-                    cal_metrics = cal_an.compute_calibration_metrics(dm.y_test, probs)
+                    model_obj = trainer.trained_models.get(mn)
+                    cal_metrics = cal_an.compute_calibration_metrics(
+                        dm.y_test,
+                        probs,
+                        classes=getattr(model_obj, "classes_", None),
+                    )
                     cal_ece[mn] = cal_metrics["ece"]
                 except Exception as exc:
                     # Conventions §3: a blind catch must log, not pass. A model
@@ -78,9 +83,13 @@ def render(ctx: AppContext) -> None:
                     preds, probs = trainer.predict(mn, dm.X_test)
                     entropies = get_prediction_entropy(probs)
                     entropy_data[mn] = float(np.mean(entropies))
-                    hce_df = identify_high_confidence_errors(dm.y_test, preds, probs, threshold=0.9)
+                    hce_info = identify_high_confidence_errors(
+                        dm.y_test, preds, probs, threshold=0.9
+                    )
                     total_preds = len(preds)
-                    hce_data[mn] = len(hce_df) / total_preds if total_preds > 0 else 0.0
+                    hce_data[mn] = (
+                        hce_info["count"] / total_preds if total_preds > 0 else 0.0
+                    )
                 except Exception as exc:
                     # Conventions §3: log rather than pass. Entropy and the
                     # high-confidence-error rate are both derived from a single
@@ -131,10 +140,21 @@ def render(ctx: AppContext) -> None:
                 all_missing.update(sd["missing_components"])
             if all_missing:
                 st.info(
-                    f"ℹ️ Some components defaulted to neutral (12.5 pts) due to "
-                    f"missing data: **{', '.join(sorted(all_missing))}**.  \n"
+                    f"ℹ️ Some components could not be measured and score **0 pts** "
+                    f"(no redistribution): **{', '.join(sorted(all_missing))}**.  \n"
                     "Run stress tests (Module 4) and ensure test data is prepared "
                     "to get full scores."
+                )
+
+            unrated_models = [
+                m for m, sd in scores_dict.items() if not sd.get("rated", True)
+            ]
+            if unrated_models:
+                st.warning(
+                    "⚠️ **Unrated** (fewer than two measured components, so the "
+                    "total reflects missing data, not quality): "
+                    f"**{', '.join(unrated_models)}**. These models are listed "
+                    "separately and excluded from the best-model ranking."
                 )
 
             # ── Tabs ──────────────────────────────────────────────────────
@@ -250,7 +270,15 @@ def render(ctx: AppContext) -> None:
 
                     if sd["missing_components"]:
                         st.warning(
-                            f"⚠️ Defaulted (12.5 pts each): {', '.join(sd['missing_components'])}"
+                            f"⚠️ Not measured (0 pts each): {', '.join(sd['missing_components'])}"
+                        )
+
+                    if not sd.get("rated", True):
+                        st.error(
+                            "❌ **Unrated model**: fewer than two components were "
+                            "measured, so this total reflects missing data, not "
+                            "model quality. Provide the missing evaluations "
+                            "before comparing it."
                         )
 
                 st.markdown("---")
@@ -310,12 +338,26 @@ def render(ctx: AppContext) -> None:
 
                 st.markdown("---")
                 st.subheader("🏆 Best Model by Reliability")
-                best_model = max(scores_dict, key=lambda m: scores_dict[m]["total"])
-                best_sd = scores_dict[best_model]
-                st.success(
-                    f"**{best_model}** has the highest reliability score: "
-                    f"**{best_sd['total']:.1f}/100** (Grade **{best_sd['grade']}**)"
-                )
+                rated_models = {
+                    m: sd
+                    for m, sd in scores_dict.items()
+                    if sd.get("rated", True)
+                }
+                if not rated_models:
+                    st.warning(
+                        "No model is rated yet: every model is missing more than "
+                        "one component. Provide robustness, calibration and "
+                        "confidence evaluations before a best-model call."
+                    )
+                else:
+                    best_model = max(
+                        rated_models, key=lambda m: rated_models[m]["total"]
+                    )
+                    best_sd = rated_models[best_model]
+                    st.success(
+                        f"**{best_model}** has the highest reliability score: "
+                        f"**{best_sd['total']:.1f}/100** (Grade **{best_sd['grade']}**)"
+                    )
 
 
 __all__ = ["render"]

@@ -21,12 +21,13 @@ import pandas as pd
 from core.errors import UnsupportedStressTypeError
 from core.perturbations import apply_perturbation, operation_key
 
-# Re-exported by identity, not copied: ``core.validation`` owns these two
-# vocabularies (ADR-011.1) and this module is the historical import site callers
-# already use.  They are declared in ``__all__`` so the re-export is explicit to
-# both readers and linters rather than looking like a stray import.
+# ``core.validation`` owns both vocabularies (ADR-011.1) and the parameter
+# validators (ADR-019, C4); this module is the historical import site callers
+# already use.  The two alias re-exports are declared in ``__all__`` so they are
+# explicit to both readers and linters rather than looking like stray imports.
 from core.validation import CORRUPTION_TYPES as CORRUPTION_TYPES
 from core.validation import SHIFT_TYPES as SHIFT_TYPES
+from core.validation import validate_stress_params
 
 __all__ = ["StressTester", "CORRUPTION_TYPES", "SHIFT_TYPES"]
 
@@ -349,14 +350,19 @@ class StressTester:
 
         Raises:
             UnsupportedStressTypeError: If a configuration names an unknown
-                stress type.  The pre-refactor code silently ``continue``-d,
-                which hid typos until a batch produced fewer rows than expected.
+                stress type or an unsupported enum value.  The pre-refactor code
+                silently ``continue``-d, which hid typos until a batch produced
+                fewer rows than expected.
+            ParameterOutOfRangeError: If a parameter is outside its bounds.
+            ValidationError: If a configuration contains an unrecognised
+                parameter key; the message names the operator and its accepted
+                keys (architecture.md §9 item 9).
         """
         results = {}
 
         for config in stress_configs:
             stress_type = config["type"]
-            params = config.get("params", {})
+            raw_params = config.get("params", {})
             name = config.get("name", stress_type)
 
             # Resolve the registry key up front so an unknown type is a typed
@@ -380,6 +386,10 @@ class StressTester:
                 for method, key in _METHOD_TO_OPERATION.items()
                 if key == stress_type
             )
+            # Validate before dispatch (C4 / architecture.md §9 item 9): an
+            # unrecognised parameter key must be a typed ValidationError that
+            # names the operator, not a bare TypeError from ``**params``.
+            params = validate_stress_params(stress_type, raw_params)
             logger.info("Applying batch stress %s", name)
             X_stressed = getattr(self, method_name)(X, **params)
 

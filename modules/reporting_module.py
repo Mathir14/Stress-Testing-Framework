@@ -16,9 +16,30 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+from core.config import ReliabilityWeights, ScoringPolicy, get_config
+from core.errors import ReportExportError
+
 
 class ReportGenerator:
     """Compile, visualise, and export results from all framework modules."""
+
+    def __init__(
+        self,
+        reliability: ReliabilityWeights | None = None,
+        policy: ScoringPolicy | None = None,
+    ) -> None:
+        """Bind the grade and scoring policies.
+
+        Args:
+            reliability: Component caps and letter-grade colours (single owner
+                for grade policy).  ``None`` uses the process-wide singleton.
+            policy: Unified scoring policy owning the ECE quality bands.
+                ``None`` uses the process-wide singleton.
+        """
+        self._reliability = (
+            get_config().reliability if reliability is None else reliability
+        )
+        self._policy = get_config().scoring if policy is None else policy
 
     # ------------------------------------------------------------------ #
     #  Data compilation                                                    #
@@ -86,15 +107,7 @@ class ReportGenerator:
                     {
                         "Model": m,
                         "ECE": round(cal_ece[m], 4),
-                        "Quality": (
-                            "Excellent"
-                            if cal_ece[m] < 0.03
-                            else (
-                                "Good"
-                                if cal_ece[m] < 0.07
-                                else "Moderate" if cal_ece[m] < 0.15 else "Poor"
-                            )
-                        ),
+                        "Quality": self._policy.resolve_ece_quality(cal_ece[m]),
                     }
                 )
 
@@ -117,9 +130,24 @@ class ReportGenerator:
         best_perf = (
             max(perf_rows, key=lambda r: r["F1"])["Model"] if perf_rows else "N/A"
         )
-        best_rel = (
-            max(rel_rows, key=lambda r: r["Total"])["Model"] if rel_rows else "N/A"
-        )
+        best_rel = "N/A"
+        if rel_rows:
+            # ADR-018 / architecture §9 item 14: an unrated model (one with too
+            # few measured components) must never be crowned.  The flag lives on
+            # the source ``reliability_scores`` entry, not on the flattened
+            # display row, so read it from there.  A filter on a key the row does
+            # not carry is a no-op that merely *looks* like a gate — the run-012
+            # MAJOR — so the source dict is the only honest place to look.
+            rated_models = {
+                m
+                for m in models
+                if reliability_scores
+                and m in reliability_scores
+                and reliability_scores[m].get("rated", True)
+            }
+            rated_rows = [r for r in rel_rows if r["Model"] in rated_models]
+            if rated_rows:
+                best_rel = max(rated_rows, key=lambda r: r["Total"])["Model"]
         most_robust = (
             min(
                 {
@@ -248,13 +276,13 @@ class ReportGenerator:
             specs=[[{"type": "indicator"}] * n],
             subplot_titles=[r["Model"] for r in rows],
         )
+        # Grade colours come from ReliabilityWeights (unified owner, ADR-018);
+        # the letter grades themselves were already resolved by the scorer.
         grade_color = {
-            "A+": "#2ECC71",
-            "A": "#27AE60",
-            "B": "#F39C12",
-            "C": "#E67E22",
-            "D": "#E74C3C",
-            "F": "#C0392B",
+            g: self._reliability.colour_for(g)
+            for g in {
+                r["Grade"] for r in rows
+            }
         }
         for i, r in enumerate(rows, start=1):
             colour = grade_color.get(r["Grade"], "#999")
@@ -367,7 +395,19 @@ class ReportGenerator:
     # ------------------------------------------------------------------ #
 
     def export_to_json(self, report: dict) -> str:
-        """Serialise report dict to a JSON string."""
+        """Serialise report dict to a JSON string.
+
+        Args:
+            report: The compiled report dict.
+
+        Returns:
+            str: Pretty-printed JSON.
+
+        Raises:
+            ReportExportError: Any value in the report fails JSON serialisation
+                (ADR-019, M4).  Previously the raw ``TypeError`` escaped the
+                module boundary and surfaced as an unrendered traceback.
+        """
 
         # Make numpy types JSON-safe
         def default(obj):
@@ -379,7 +419,15 @@ class ReportGenerator:
                 return obj.tolist()
             raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
-        return json.dumps(report, indent=2, default=default)
+        try:
+            return json.dumps(report, indent=2, default=default)
+        except TypeError as exc:
+            raise ReportExportError(
+                "The report contains a value that cannot be serialised to JSON; "
+                "convert the offending value to a Python scalar or list before "
+                "exporting.",
+                context={"format": "json", "cause": str(exc)},
+            ) from exc
 
     def export_performance_csv(self, report: dict) -> bytes:
         df = pd.DataFrame(report["performance"])

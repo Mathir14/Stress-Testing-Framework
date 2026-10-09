@@ -764,3 +764,73 @@ def test_coerce_numeric_frame_does_not_mutate_the_input():
     before = frame.copy()
     coerce_numeric_frame(frame)
     pd.testing.assert_frame_equal(frame, before)
+
+
+# ── §9 item 9: the batch path validates before ``**params`` dispatch ──────────
+
+
+def test_batch_stress_rejects_an_unknown_key_before_dispatching():
+    """C4 / architecture.md §9 item 9 (ADR-019).
+
+    ``batch_stress_test`` used to call ``method(X, **params)`` directly, so an
+    unrecognised parameter key raised a bare ``TypeError`` from the expansion —
+    an untyped error naming ``noise_levl`` with no operator and no accepted set.
+    Validation now runs **before** the model, ``X`` or ``y`` are touched, which
+    is why this test can pass ``model=None``: the failure cannot depend on them.
+    """
+    pd = pytest.importorskip("pandas")
+    from modules.stress_module import StressTester
+
+    tester = StressTester()
+    frame = pd.DataFrame({"a": [1.0, 2.0, 3.0, 4.0]})
+    configs = [{"type": "gaussian_noise", "params": {"noise_levl": 0.1}, "name": "typo"}]
+
+    with pytest.raises(ValidationError) as excinfo:
+        tester.batch_stress_test(
+            model=None, X=frame, y=pd.Series([0, 1, 0, 1]), stress_configs=configs
+        )
+    assert excinfo.value.context["unknown"] == ["noise_levl"]
+    assert excinfo.value.context["accepted"] == ["noise_level"]
+    assert "gaussian_noise" in str(excinfo.value)
+
+
+def test_batch_stress_rejects_an_unknown_type_before_dispatching():
+    """The same guard at the registry-key boundary."""
+    pd = pytest.importorskip("pandas")
+    from modules.stress_module import StressTester
+
+    tester = StressTester()
+    with pytest.raises(UnsupportedStressTypeError) as excinfo:
+        tester.batch_stress_test(
+            model=None,
+            X=pd.DataFrame({"a": [1.0, 2.0]}),
+            y=pd.Series([0, 1]),
+            stress_configs=[{"type": "bogus_op", "params": {}, "name": "bogus"}],
+        )
+    assert excinfo.value.context["stress_type"] == "bogus_op"
+
+
+def test_batch_stress_still_dispatches_a_valid_configuration():
+    """The guard must not reject a well-formed config on its way through.
+
+    A rejection-only test would pass even if the validation call had replaced
+    the dispatch entirely, so this is the positive control.
+    """
+    pd = pytest.importorskip("pandas")
+    numpy = pytest.importorskip("numpy")
+    from modules.stress_module import StressTester
+
+    class _StubModel:
+        def predict(self, X):
+            return numpy.zeros(len(X), dtype=int)
+
+    tester = StressTester(rng=numpy.random.default_rng(0))
+    frame = pd.DataFrame({"a": [1.0, 2.0, 3.0, 4.0], "b": [0.5, 1.5, 2.5, 3.5]})
+    results = tester.batch_stress_test(
+        _StubModel(),
+        frame,
+        pd.Series([0, 0, 0, 0]),
+        [{"type": "gaussian_noise", "params": {"noise_level": 0.1}, "name": "noise"}],
+    )
+    assert set(results) == {"noise"}
+    assert "performance_drop" in results["noise"]

@@ -376,6 +376,38 @@ class DataManager:
 
         return X_train_scaled, X_val_scaled, X_test_scaled
 
+    def _stratify_argument(
+        self, y: pd.Series, *, stage: str
+    ) -> pd.Series | None:
+        """Return the stratify argument for :func:`train_test_split`, or ``None``.
+
+        ``train_test_split`` raises a bare ``ValueError`` when a class has a
+        single member.  Imbalanced targets are the rule in stress/failure
+        studies, so rather than let that escape as a raw traceback (M3,
+        ADR-019) the guard falls back to a non-stratified split and logs why.
+
+        Args:
+            y: Target series for the split about to be taken.
+            stage: Human label for the split, used in the log message.
+
+        Returns:
+            pd.Series | None: ``y`` when every class has at least two members and
+            there are fewer than ten classes, otherwise ``None``.
+        """
+        if y.nunique() >= 10:
+            return None
+        counts = y.value_counts()
+        if counts.empty or int(counts.min()) < 2:
+            logger.warning(
+                "Stratified %s split disabled: the least populated class has %s "
+                "member(s), fewer than the two required. Falling back to a "
+                "non-stratified split.",
+                stage,
+                "0" if counts.empty else int(counts.min()),
+            )
+            return None
+        return y
+
     def split_data(
         self,
         df: pd.DataFrame,
@@ -396,6 +428,10 @@ class DataManager:
 
         Returns:
             Tuple: (X_train, X_val, X_test, y_train, y_val, y_test)
+
+        Raises:
+            DatasetError: If a split cannot be taken even after the stratify
+                guard falls back to a non-stratified split.
         """
         self.target_column = target_column
 
@@ -406,23 +442,39 @@ class DataManager:
         self.feature_columns = X.columns.tolist()
 
         # First split: separate test set
-        X_temp, X_test, y_temp, y_test = train_test_split(
-            X,
-            y,
-            test_size=test_size,
-            random_state=random_state,
-            stratify=y if y.nunique() < 10 else None,
-        )
+        try:
+            X_temp, X_test, y_temp, y_test = train_test_split(
+                X,
+                y,
+                test_size=test_size,
+                random_state=random_state,
+                stratify=self._stratify_argument(y, stage="test"),
+            )
+        except ValueError as exc:
+            raise DatasetError(
+                f"Could not split the dataset into train/test: {exc}. Check that "
+                "the test and validation proportions leave at least one sample "
+                "per class.",
+                context={"stage": "test", "error_type": type(exc).__name__},
+            ) from exc
 
         # Second split: separate validation set from remaining data
         val_size_adjusted = val_size / (1 - test_size)
-        X_train, X_val, y_train, y_val = train_test_split(
-            X_temp,
-            y_temp,
-            test_size=val_size_adjusted,
-            random_state=random_state,
-            stratify=y_temp if y_temp.nunique() < 10 else None,
-        )
+        try:
+            X_train, X_val, y_train, y_val = train_test_split(
+                X_temp,
+                y_temp,
+                test_size=val_size_adjusted,
+                random_state=random_state,
+                stratify=self._stratify_argument(y_temp, stage="validation"),
+            )
+        except ValueError as exc:
+            raise DatasetError(
+                f"Could not split the dataset into train/validation: {exc}. Check "
+                "that the test and validation proportions leave at least one "
+                "sample per class.",
+                context={"stage": "validation", "error_type": type(exc).__name__},
+            ) from exc
 
         # Store splits
         self.X_train = X_train

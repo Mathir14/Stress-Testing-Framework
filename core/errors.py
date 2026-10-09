@@ -28,6 +28,9 @@ __all__ = [
     "ArtifactNotFoundError",
     "ArtifactIntegrityError",
     "ArtifactUntrustedError",
+    "UnknownModelError",
+    "ModelNotTrainedError",
+    "ReportExportError",
 ]
 
 
@@ -125,3 +128,15 @@ class ArtifactIntegrityError(ArtifactError):
 
 class ArtifactUntrustedError(ArtifactError):
     """An artifact has no attestation and consent was not granted."""
+
+
+class UnknownModelError(FrameworkError):
+    """An estimator name or key is not one this framework builds."""
+
+
+class ModelNotTrainedError(FrameworkError):
+    """An operation needs a trained estimator that has not been fitted yet."""
+
+
+class ReportExportError(FrameworkError):
+    """A report could not be serialised to its export format."""

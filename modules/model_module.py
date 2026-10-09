@@ -26,6 +26,7 @@ from sklearn.metrics import (
 from xgboost import XGBClassifier
 
 from core.config import get_config
+from core.errors import ModelNotTrainedError, UnknownModelError
 from core.model_io import ArtifactRecord, ModelArtifactStore
 
 logger = logging.getLogger(__name__)
@@ -78,7 +79,11 @@ class ModelTrainer:
                 random_state=params.get("random_state", 42),
             )
         else:
-            raise ValueError(f"Unknown model: {model_name}")
+            raise UnknownModelError(
+                f"Unknown model {model_name!r}. Accepted models are: "
+                "'Logistic Regression', 'Random Forest', 'XGBoost'.",
+                context={"model_name": model_name},
+            )
 
     def train_model(
         self,
@@ -118,11 +123,29 @@ class ModelTrainer:
             Predictions
         """
         if model_name not in self.trained_models:
-            raise ValueError(f"Model {model_name} not trained yet")
+            raise ModelNotTrainedError(
+                f"Model {model_name!r} has not been trained yet; train it in "
+                "Module 2 before predicting.",
+                context={"model_name": model_name},
+            )
 
         model = self.trained_models[model_name]
-        predictions = model.predict(X)
-        probabilities = model.predict_proba(X)
+        try:
+            predictions = model.predict(X)
+        except Exception as exc:  # pragma: no cover - sklearn errors are domain-bound
+            raise ModelNotTrainedError(
+                f"Model {model_name!r} cannot predict; ensure it was fitted "
+                "on the same feature shape.",
+                context={"model_name": model_name},
+            ) from exc
+        try:
+            probabilities = model.predict_proba(X)
+        except Exception as exc:  # pragma: no cover - sklearn errors are domain-bound
+            raise ModelNotTrainedError(
+                f"Model {model_name!r} cannot produce probabilities; check that "
+                "the estimator supports predict_proba.",
+                context={"model_name": model_name},
+            ) from exc
 
         return predictions, probabilities
 
@@ -391,17 +414,31 @@ class ModelTrainer:
             ArtifactRecord: The attestation record written by the store
 
         Raises:
-            ValueError: If the model has not been trained
+            ModelNotTrainedError: If the model has not been trained
             ArtifactPathError: If the filename fails sanitisation or containment
         """
         if model_name not in self.trained_models:
-            raise ValueError(f"Model {model_name} not trained yet")
+            raise ModelNotTrainedError(
+                f"Model {model_name!r} has not been trained yet; nothing to "
+                "save.",
+                context={"model_name": model_name},
+            )
 
-        record = self._store.save(
-            self.trained_models[model_name],
-            Path(filepath).name,
-            model_name=model_name,
-        )
+        try:
+            record = self._store.save(
+                self.trained_models[model_name],
+                Path(filepath).name,
+                model_name=model_name,
+            )
+        except Exception as exc:
+            from core.errors import ArtifactError
+
+            if isinstance(exc, ArtifactError):
+                raise
+            raise ArtifactError(
+                f"Could not save model {model_name!r} to {Path(filepath).name}.",
+                context={"model_name": model_name},
+            ) from exc
         logger.info(
             "Saved model %s as %s (%d bytes)",
             model_name,
@@ -409,7 +446,10 @@ class ModelTrainer:
             record.size_bytes,
         )
         if self.reporter is not None:
-            self.reporter.success(f"✅ Model saved to {record.name}")
+            try:
+                self.reporter.success(f"✅ Model saved to {record.name}")
+            except Exception:
+                pass
         return record
 
     def load_model(
@@ -433,7 +473,17 @@ class ModelTrainer:
             ArtifactIntegrityError: Hash mismatch, size cap, or wrong type
             ArtifactUntrustedError: Unattested file and ``trust`` not set
         """
-        model, record = self._store.load(Path(filepath).name, trust=trust)
+        try:
+            model, record = self._store.load(Path(filepath).name, trust=trust)
+        except Exception as exc:
+            from core.errors import ArtifactError
+
+            if isinstance(exc, ArtifactError):
+                raise
+            raise ArtifactError(
+                f"Could not load model from {Path(filepath).name}.",
+                context={"model_name": model_name},
+            ) from exc
         self.trained_models[model_name] = model
         logger.info(
             "Loaded model %s from %s%s",
@@ -442,7 +492,10 @@ class ModelTrainer:
             " (unattested, trust=True)" if trust and not record.created_at else "",
         )
         if self.reporter is not None:
-            self.reporter.success(f"✅ Model loaded from {record.name}")
+            try:
+                self.reporter.success(f"✅ Model loaded from {record.name}")
+            except Exception:
+                pass
         return record
 
     def list_saved_models(self) -> list[ArtifactRecord]:

@@ -212,7 +212,17 @@ class ArtifactPathError(ArtifactError): ...      # traversal / containment viola
 class ArtifactNotFoundError(ArtifactError): ...   # missing file or manifest entry
 class ArtifactIntegrityError(ArtifactError): ...  # sha256 mismatch
 class ArtifactUntrustedError(ArtifactError): ...  # not attested; trust not granted
+class UnknownModelError(FrameworkError): ...       # model name not in the trainer (ADR-019)
+class ModelNotTrainedError(FrameworkError): ...    # predict/save before training (ADR-019)
+class ReportExportError(FrameworkError): ...       # JSON serialisation failure (ADR-019)
 ```
+
+`UnknownModelError`, `ModelNotTrainedError` and `ReportExportError` close the
+porous error boundary of run-011 M4: `ModelTrainer.get_model` / `predict` /
+`save_model` and `ReportGenerator.export_to_json` previously raised bare
+`ValueError`/`TypeError`, which `views.reporters.render_errors` (which catches
+only `FrameworkError`) could not render — so ordinary UI misuse surfaced as a raw
+traceback instead of the framework's error UI (conventions §3).
 
 ### 4.2 `core.config`
 
@@ -240,6 +250,33 @@ class ReliabilityWeights:
     )   # score < 50.0 => "F" / "#C0392B" (implicit fallthrough, see ADR-009)
 
 @dataclass(frozen=True)
+class ScoringPolicy:
+    """Single owner of "how good is this model" policy (ADR-018, run-011 M7).
+
+    ``ReliabilityWeights`` keeps the component caps and letter grades;
+    ``ScoringPolicy`` owns the values that run-011 found duplicated and
+    self-contradictory: the composite weights, the missing-component policy, the
+    minimum measured-components gate, the ECE quality bands and the robustness
+    severity bands.
+    """
+
+    composite_weights: tuple[tuple[str, float], ...] = (
+        ("performance", 0.5), ("robustness", 0.25), ("calibration", 0.25),
+    )
+    missing_component_points: float = 0.0   # zero credit; NO redistribution
+    min_measured_components: int = 2         # below this a model is unrated
+    ece_quality: tuple[tuple[float, str], ...] = (
+        (0.03, "Excellent"), (0.07, "Good"), (0.15, "Moderate"),
+    )   # higher ECE => quality_fallthrough ("Poor")
+    severity_bands: tuple[tuple[float, str], ...] = (
+        (5.0, "Low"), (15.0, "Medium"), (30.0, "High"),
+    )   # higher drop => severity_fallthrough ("Critical")
+
+    def resolve_ece_quality(self, ece: float) -> str: ...
+    def resolve_severity(self, drop_pct: float) -> str: ...
+    def weight_for(self, component: str) -> float: ...
+
+@dataclass(frozen=True)
 class ArtifactPolicy:
     root_dir: Path = Path("saved_models")
     allowed_suffixes: tuple[str, ...] = (".pkl",)
@@ -260,11 +297,23 @@ class AppConfig:
     stress_bounds: StressBounds
     reliability: ReliabilityWeights
     artifacts: ArtifactPolicy
+    scoring: ScoringPolicy = ScoringPolicy()   # ADR-018; defaulted
     log_level: str = "INFO"
     random_seed: int | None = None
 
 def get_config(overrides: Mapping[str, Any] | None = None) -> AppConfig: ...
 ```
+
+**Monotone scoring policy (ADR-018, run-011 C3/M1/M7).** Both scored outputs —
+`ReliabilityScorer.score_model` and `ModelComparator.compute_composite_score` —
+use a **fixed denominator with zero credit for a missing component and no
+redistribution**. Every component score is `>= 0`, so measuring additional
+evidence can never lower a total (the pre-remediation behaviour inverted rankings:
+`45/50x100 = 90.0` fell to `75/100x100 = 75.0` when robustness/calibration were
+added). A model with fewer than `min_measured_components` measured components is
+`rated=False` and is surfaced separately rather than ranked. Entropy is measured
+in **bits** (`np.log2`) at the `utils.metrics` boundary so the confidence
+component's `log2(n_classes)` normalisation is dimensionally consistent.
 
 **Parity rule:** every default above reproduces current behaviour exactly. The
 reliability constants mirror `modules/reliability_module.py:25-51,66,75`. Changing
@@ -980,6 +1029,51 @@ Intentional behaviour changes — the **complete** list; anything not here is a 
     Styler.map instead.` Purely an API migration — the returned styling is
     identical — but `applymap` is removed in pandas 3.0, so leaving it is
     deferred breakage, not a style preference.
+
+**Run-011 remediation behaviour changes (ADR-017..020).** These extend the list
+above; the raw-link target, training, `predict`, accuracy, confusion-matrix and
+report paths stay in the estimator's native label space.
+
+12. **Calibration/Brier operate in the model's class-index space** (ADR-017,
+    run-011 C1). `align_target_indices` / `multiclass_brier` and every
+    `CalibrationAnalyzer` entry point take a keyword-only `classes`. Passing the
+    estimator's `classes_` maps arbitrary labels (`"cat"`, `[5, 9]`) to
+    probability columns; `classes=None` means **strict identity** — labels must
+    be exactly `0..K-1` or a typed `ValidationError` is raised, so a call site
+    that forgets `classes` fails loudly instead of mis-scoring.
+13. **`utils.calculate_brier_score` and `utils.get_confidence_bins` are removed**
+    (ADR-017). `modules.calibration_module.multiclass_brier` is the framework's
+    single Brier implementation. The §9 `utils.metrics.*` freeze is therefore
+    narrowed by exactly these two symbols; everything else in `utils.metrics` is
+    frozen unchanged except `get_prediction_entropy`'s units (item 15).
+14. **Monotone scoring** (ADR-018, run-011 C3/M1/M7). `score_model` awards a
+    missing component `ScoringPolicy.missing_component_points` (`0.0`, formerly
+    the `12.5` midpoint) and adds a `rated` flag; `compute_composite_score` uses
+    the fixed denominator with no redistribution and a `rated` gate. Ranking and
+    recommendation helpers never rank an unrated model.
+15. **`utils.metrics.get_prediction_entropy` returns bits**, not nats (ADR-018,
+    run-011 M2): `np.log2` instead of `np.log`. The Reliability view's displayed
+    "Avg Entropy" changes units; the confidence component is now dimensionally
+    correct (uniform binary confidence `= 12.5`, was `~16.34`).
+16. **HCE rate uses the error count, not `len(dict)`** (run-011 C2). Both
+    `views/module_08_reliability.py` and `views/module_09_reports.py` read
+    `hce_dict["count"] / n`; `identify_high_confidence_errors` returns a
+    `TypedDict`. The previous `len(hce_dict)` was always `4`.
+17. **Complete error boundary and pure getters** (ADR-019, run-011 M3/M4/M5/m2/m6).
+    `UnknownModelError` / `ModelNotTrainedError` / `ReportExportError` replace
+    bare exits; `PostStressAnalyzer._compute_robustness_breakdown` is the single
+    arithmetic source and the getters never write `robustness_scores`;
+    `calculate_robustness_score` raises `ValidationError` for an unknown model;
+    zero-mean consistency is handled explicitly (no `nan`-masking clip);
+    `split_data` guards `stratify` (fewer than two members in any class, or ten
+    or more classes) and wraps any residual `ValueError` as `DatasetError`.
+18. **Dead comparison weights removed** (run-011 m1). `ModelComparator`'s
+    `METRIC_WEIGHT` / `ROBUSTNESS_WEIGHT` / `CALIBRATION_WEIGHT` are deleted;
+    `ScoringPolicy` is the single owner.
+19. **Prediction/ECE/entropy caching is declined and deferred** (ADR-020,
+    run-011 M6). No cache key can be stable while models are name-identified and
+    frames are unhashed, so a cache could silently serve stale scores. §8's
+    figure-generation bound is reaffirmed.
 
 Measured today, for reference — the defects items 1–11 remove: `int64 + float64`
 frames silently no-op in 5 of 6 operators; `int64` ndarrays silently truncate;

@@ -50,147 +50,147 @@
     },
     "confidence_only": {
       "available_components": [],
-      "calibration": 12.5,
-      "colour": "#FF5722",
-      "confidence": 12.5,
-      "grade": "D",
+      "calibration": 0.0,
+      "colour": "#C0392B",
+      "confidence": 0.0,
+      "grade": "F",
       "missing_components": [
         "Performance",
         "Calibration",
         "Robustness",
         "Confidence"
       ],
-      "performance": 12.5,
-      "robustness": 12.5,
-      "total": 50.0
+      "performance": 0.0,
+      "robustness": 0.0,
+      "total": 0.0
     },
     "confidence_only__nc3": {
       "available_components": [],
-      "calibration": 12.5,
-      "colour": "#FF5722",
-      "confidence": 12.5,
-      "grade": "D",
+      "calibration": 0.0,
+      "colour": "#C0392B",
+      "confidence": 0.0,
+      "grade": "F",
       "missing_components": [
         "Performance",
         "Calibration",
         "Robustness",
         "Confidence"
       ],
-      "performance": 12.5,
-      "robustness": 12.5,
-      "total": 50.0
+      "performance": 0.0,
+      "robustness": 0.0,
+      "total": 0.0
     },
     "confidence_only__nc5": {
       "available_components": [],
-      "calibration": 12.5,
-      "colour": "#FF5722",
-      "confidence": 12.5,
-      "grade": "D",
+      "calibration": 0.0,
+      "colour": "#C0392B",
+      "confidence": 0.0,
+      "grade": "F",
       "missing_components": [
         "Performance",
         "Calibration",
         "Robustness",
         "Confidence"
       ],
-      "performance": 12.5,
-      "robustness": 12.5,
-      "total": 50.0
+      "performance": 0.0,
+      "robustness": 0.0,
+      "total": 0.0
     },
     "missing_all": {
       "available_components": [],
-      "calibration": 12.5,
-      "colour": "#FF5722",
-      "confidence": 12.5,
-      "grade": "D",
+      "calibration": 0.0,
+      "colour": "#C0392B",
+      "confidence": 0.0,
+      "grade": "F",
       "missing_components": [
         "Performance",
         "Calibration",
         "Robustness",
         "Confidence"
       ],
-      "performance": 12.5,
-      "robustness": 12.5,
-      "total": 50.0
+      "performance": 0.0,
+      "robustness": 0.0,
+      "total": 0.0
     },
     "missing_all__nc3": {
       "available_components": [],
-      "calibration": 12.5,
-      "colour": "#FF5722",
-      "confidence": 12.5,
-      "grade": "D",
+      "calibration": 0.0,
+      "colour": "#C0392B",
+      "confidence": 0.0,
+      "grade": "F",
       "missing_components": [
         "Performance",
         "Calibration",
         "Robustness",
         "Confidence"
       ],
-      "performance": 12.5,
-      "robustness": 12.5,
-      "total": 50.0
+      "performance": 0.0,
+      "robustness": 0.0,
+      "total": 0.0
     },
     "missing_all__nc5": {
       "available_components": [],
-      "calibration": 12.5,
-      "colour": "#FF5722",
-      "confidence": 12.5,
-      "grade": "D",
+      "calibration": 0.0,
+      "colour": "#C0392B",
+      "confidence": 0.0,
+      "grade": "F",
       "missing_components": [
         "Performance",
         "Calibration",
         "Robustness",
         "Confidence"
       ],
-      "performance": 12.5,
-      "robustness": 12.5,
-      "total": 50.0
+      "performance": 0.0,
+      "robustness": 0.0,
+      "total": 0.0
     },
     "partial": {
       "available_components": [],
-      "calibration": 12.5,
-      "colour": "#FF5722",
-      "confidence": 12.5,
-      "grade": "D",
+      "calibration": 0.0,
+      "colour": "#C0392B",
+      "confidence": 0.0,
+      "grade": "F",
       "missing_components": [
         "Performance",
         "Calibration",
         "Robustness",
         "Confidence"
       ],
-      "performance": 12.5,
-      "robustness": 12.5,
-      "total": 50.0
+      "performance": 0.0,
+      "robustness": 0.0,
+      "total": 0.0
     },
     "partial__nc3": {
       "available_components": [],
-      "calibration": 12.5,
-      "colour": "#FF5722",
-      "confidence": 12.5,
-      "grade": "D",
+      "calibration": 0.0,
+      "colour": "#C0392B",
+      "confidence": 0.0,
+      "grade": "F",
       "missing_components": [
         "Performance",
         "Calibration",
         "Robustness",
         "Confidence"
       ],
-      "performance": 12.5,
-      "robustness": 12.5,
-      "total": 50.0
+      "performance": 0.0,
+      "robustness": 0.0,
+      "total": 0.0
     },
     "partial__nc5": {
       "available_components": [],
-      "calibration": 12.5,
-      "colour": "#FF5722",
-      "confidence": 12.5,
-      "grade": "D",
+      "calibration": 0.0,
+      "colour": "#C0392B",
+      "confidence": 0.0,
+      "grade": "F",
       "missing_components": [
         "Performance",
         "Calibration",
         "Robustness",
         "Confidence"
       ],
-      "performance": 12.5,
-      "robustness": 12.5,
-      "total": 50.0
+      "performance": 0.0,
+      "robustness": 0.0,
+      "total": 0.0
     },
     "perfect": {
       "available_components": [
@@ -292,9 +292,9 @@
       "available_components": [
         "Performance"
       ],
-      "calibration": 12.5,
+      "calibration": 0.0,
       "colour": "#C0392B",
-      "confidence": 12.5,
+      "confidence": 0.0,
       "grade": "F",
       "missing_components": [
         "Calibration",
@@ -302,16 +302,16 @@
         "Confidence"
       ],
       "performance": 0.0,
-      "robustness": 12.5,
-      "total": 37.5
+      "robustness": 0.0,
+      "total": 0.0
     },
     "zero_performance__nc3": {
       "available_components": [
         "Performance"
       ],
-      "calibration": 12.5,
+      "calibration": 0.0,
       "colour": "#C0392B",
-      "confidence": 12.5,
+      "confidence": 0.0,
       "grade": "F",
       "missing_components": [
         "Calibration",
@@ -319,16 +319,16 @@
         "Confidence"
       ],
       "performance": 0.0,
-      "robustness": 12.5,
-      "total": 37.5
+      "robustness": 0.0,
+      "total": 0.0
     },
     "zero_performance__nc5": {
       "available_components": [
         "Performance"
       ],
-      "calibration": 12.5,
+      "calibration": 0.0,
       "colour": "#C0392B",
-      "confidence": 12.5,
+      "confidence": 0.0,
       "grade": "F",
       "missing_components": [
         "Calibration",
@@ -336,8 +336,8 @@
         "Confidence"
       ],
       "performance": 0.0,
-      "robustness": 12.5,
-      "total": 37.5
+      "robustness": 0.0,
+      "total": 0.0
     }
   },
   "grade_colours": {

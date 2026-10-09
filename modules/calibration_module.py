@@ -1,17 +1,133 @@
 """
 Calibration Analysis Module
 Assesses and improves model probability calibration
+
+Architecture reference: ADR-017.  Calibration and Brier scoring operate in the
+model's **class-index space**: a raw label is mapped to the probability column it
+belongs to via the estimator's ``classes_``.  When ``classes`` is not supplied,
+labels must already be exactly ``0..K-1`` or a typed ``ValidationError`` is
+raised — a call site that forgets to thread ``classes`` fails loudly instead of
+silently mis-scoring.
 """
 
+from __future__ import annotations
+
 import logging
-from typing import Dict, List
+from typing import Any, Dict, List
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from sklearn.metrics import brier_score_loss
+
+from core.config import ScoringPolicy, get_config
+from core.errors import ValidationError
 
 logger = logging.getLogger(__name__)
+
+__all__ = ["CalibrationAnalyzer", "align_target_indices", "multiclass_brier"]
+
+
+def _hashable(value: Any) -> Any:
+    """Return a plain-Python equivalent of a numpy scalar for use as a dict key.
+
+    ``np.str_("cat") == "cat"`` and ``hash(np.str_("cat")) == hash("cat")``, so
+    this is not strictly required on the pinned stack; it is here so the mapping
+    cannot depend on that equality staying true across numpy versions.
+    """
+    item = getattr(value, "item", None)
+    return item() if callable(item) else value
+
+
+def align_target_indices(y_true: np.ndarray, classes: Any) -> np.ndarray:
+    """Map raw target labels onto probability-column indices.
+
+    Args:
+        y_true: Raw target labels, in the estimator's native label space.
+        classes: The estimator's ``classes_`` array, or ``None`` for strict
+            identity (labels must be exactly ``0..K-1``).
+
+    Returns:
+        np.ndarray: Integer column indices, one per row.
+
+    Raises:
+        ValidationError: If ``classes`` is ``None`` and the labels are not
+            exactly ``0..K-1``, or if a label is absent from ``classes``, or if
+            the mapping exceeds the probability array's column count.
+    """
+    raw = np.asarray(y_true)
+    if classes is None:
+        unique = np.unique(raw)
+        expected = np.arange(len(unique))
+        if unique.shape != expected.shape or not np.array_equal(unique, expected):
+            preview = [str(value) for value in unique[:10]]
+            raise ValidationError(
+                "Calibration requires class labels exactly 0..K-1 when `classes` "
+                f"is not supplied; got labels {preview}"
+                f"{'...' if len(unique) > 10 else ''}. Pass the estimator's "
+                "`classes_` so labels can be mapped to probability columns.",
+                context={"labels": [str(value) for value in unique[:20]]},
+            )
+        return raw.astype(int)
+
+    index_of: dict[Any, int] = {}
+    for position, label in enumerate(np.asarray(classes)):
+        index_of[_hashable(label)] = position
+
+    out = np.empty(raw.shape[0], dtype=int)
+    for position, label in enumerate(raw):
+        key = _hashable(label)
+        if key not in index_of:
+            raise ValidationError(
+                f"Target label {label!r} is not one of the estimator's classes "
+                f"({list(np.asarray(classes))[:10]}). The target was encoded or "
+                "predicted in a different label space.",
+                context={"label": str(label), "classes": [str(c) for c in index_of]},
+            )
+        out[position] = index_of[key]
+    return out
+
+
+def multiclass_brier(
+    y_true: np.ndarray, probabilities: np.ndarray, *, classes: Any = None
+) -> float:
+    """Compute the mean multi-class Brier score.
+
+    This is the framework's **single** Brier implementation (ADR-017): the
+    former ``utils.calculate_brier_score`` was removed so the two copies could
+    not disagree about label guarding.
+
+    Args:
+        y_true: Raw target labels.
+        probabilities: ``(n_samples, n_classes)`` predicted probabilities.
+        classes: The estimator's ``classes_`` array, or ``None`` for strict
+            identity (labels must be exactly ``0..K-1``).
+
+    Returns:
+        float: Mean squared error between the one-hot targets and the predicted
+        probabilities.
+
+    Raises:
+        ValidationError: If labels cannot be aligned to probability columns.
+    """
+    probs = np.asarray(probabilities, dtype=float)
+    if probs.ndim != 2:
+        raise ValidationError(
+            f"Probabilities must be 2-D (n_samples, n_classes); got shape "
+            f"{list(probs.shape)}.",
+            context={"shape": list(probs.shape)},
+        )
+    n_classes = probs.shape[1]
+    indices = align_target_indices(y_true, classes)
+    if indices.size and int(indices.max()) >= n_classes:
+        raise ValidationError(
+            f"Target label maps to column {int(indices.max())} but the "
+            f"probability matrix has only {n_classes} column(s).",
+            context={"max_index": int(indices.max()), "n_classes": n_classes},
+        )
+    onehot = np.zeros((indices.shape[0], n_classes), dtype=float)
+    if indices.size:
+        onehot[np.arange(indices.shape[0]), indices] = 1.0
+    return float(np.mean(np.sum((probs - onehot) ** 2, axis=1)))
 
 
 class CalibrationAnalyzer:
@@ -20,20 +136,50 @@ class CalibrationAnalyzer:
     match true outcome frequencies.
     """
 
-    def __init__(self):
-        self.calibration_results = {}
+    def __init__(self, policy: ScoringPolicy | None = None) -> None:
+        """Bind the scoring policy.
+
+        Args:
+            policy: Policy supplying the ECE quality bands.  ``None`` uses the
+                process-wide configuration singleton.
+        """
+        self.calibration_results: Dict = {}
+        self._policy = get_config().scoring if policy is None else policy
 
     def compute_calibration_metrics(
-        self, y_true: np.ndarray, probabilities: np.ndarray, n_bins: int = 10
+        self,
+        y_true: np.ndarray,
+        probabilities: np.ndarray,
+        *,
+        classes: Any = None,
+        n_bins: int = 10,
     ) -> Dict:
-        """Compute comprehensive calibration metrics."""
-        y_true = np.asarray(y_true)
-        probabilities = np.asarray(probabilities)
-        n_classes = probabilities.shape[1]
+        """Compute comprehensive calibration metrics.
 
-        confidence = np.max(probabilities, axis=1)
-        y_pred = np.argmax(probabilities, axis=1)
-        correct = (y_pred == y_true).astype(int)
+        Args:
+            y_true: Raw target labels.
+            probabilities: ``(n_samples, n_classes)`` predicted probabilities.
+            classes: Estimator ``classes_`` for label alignment.
+            n_bins: Number of confidence bins.
+
+        Returns:
+            Dict: ECE, MCE, Brier, confidence/accuracy summaries and bin arrays.
+        """
+        probs = np.asarray(probabilities, dtype=float)
+        indices = align_target_indices(y_true, classes)
+        if indices.size and int(indices.max()) >= probs.shape[1]:
+            raise ValidationError(
+                f"Target label maps to column {int(indices.max())} but the "
+                f"probability matrix has only {probs.shape[1]} column(s).",
+                context={
+                    "max_index": int(indices.max()),
+                    "n_classes": probs.shape[1],
+                },
+            )
+
+        confidence = np.max(probs, axis=1)
+        y_pred = np.argmax(probs, axis=1)
+        correct = (y_pred == indices).astype(int)
 
         bin_edges = np.linspace(0, 1, n_bins + 1)
         bin_ids = np.digitize(confidence, bin_edges[1:-1])
@@ -49,7 +195,7 @@ class CalibrationAnalyzer:
                 bin_conf[b] = confidence[mask].mean()
                 bin_count[b] = mask.sum()
 
-        ece = float(np.sum(bin_count / len(y_true) * np.abs(bin_acc - bin_conf)))
+        ece = float(np.sum(bin_count / len(probs) * np.abs(bin_acc - bin_conf)))
 
         populated = bin_count > 0
         mce = (
@@ -58,10 +204,10 @@ class CalibrationAnalyzer:
             else 0.0
         )
 
-        brier = self._multiclass_brier(y_true, probabilities, n_classes)
+        brier = multiclass_brier(y_true, probs, classes=classes)
 
-        avg_confidence = float(confidence.mean())
-        avg_accuracy = float(correct.mean())
+        avg_confidence = float(confidence.mean()) if len(probs) else 0.0
+        avg_accuracy = float(correct.mean()) if len(probs) else 0.0
 
         return {
             "ece": ece,
@@ -77,46 +223,40 @@ class CalibrationAnalyzer:
             "n_bins": n_bins,
         }
 
-    def _multiclass_brier(self, y_true, probabilities, n_classes):
-        y_onehot = np.zeros((len(y_true), n_classes))
-        for i, label in enumerate(y_true):
-            if 0 <= int(label) < n_classes:
-                y_onehot[i, int(label)] = 1
-        return float(np.mean(np.sum((probabilities - y_onehot) ** 2, axis=1)))
-
     def compute_per_class_calibration(
         self,
         y_true: np.ndarray,
         probabilities: np.ndarray,
-        class_names: List[str] = None,
+        *,
+        classes: Any = None,
+        class_names: List[str] | None = None,
         n_bins: int = 10,
     ) -> pd.DataFrame:
         """Compute calibration metrics per class (one-vs-rest)."""
-        y_true = np.asarray(y_true)
-        probabilities = np.asarray(probabilities)
-        n_classes = probabilities.shape[1]
+        probs = np.asarray(probabilities, dtype=float)
+        indices = align_target_indices(y_true, classes)
+        n_classes = probs.shape[1]
 
         if class_names is None:
             class_names = [f"Class {i}" for i in range(n_classes)]
 
         records = []
         for c in range(n_classes):
-            y_bin = (y_true == c).astype(int)
-            prob_c = probabilities[:, c]
+            y_bin = (indices == c).astype(int)
+            prob_c = probs[:, c]
 
-            try:
-                brier = float(brier_score_loss(y_bin, prob_c))
-            except Exception as exc:
+            if np.isfinite(prob_c).all():
+                brier = float(np.mean((prob_c - y_bin) ** 2))
+            else:
                 # The single documented degradation permitted by architecture.md
                 # §5: per-class Brier -> NaN.  It MUST be logged, otherwise a
                 # silently-NaN column is indistinguishable from a real result.
                 brier = float("nan")
                 logger.warning(
-                    "Brier score unavailable for class %s (%s); recording NaN. "
-                    "Check that probabilities for this class are finite and "
-                    "within [0, 1].",
+                    "Brier score unavailable for class %s; recording NaN. Check "
+                    "that probabilities for this class are finite and within "
+                    "[0, 1].",
                     class_names[c] if c < len(class_names) else c,
-                    exc,
                 )
 
             bin_edges = np.linspace(0, 1, n_bins + 1)
@@ -125,7 +265,7 @@ class CalibrationAnalyzer:
             for b in range(n_bins):
                 mask = bin_ids == b
                 if mask.sum() > 0:
-                    ece += (mask.sum() / len(y_true)) * abs(
+                    ece += (mask.sum() / len(indices)) * abs(
                         y_bin[mask].mean() - prob_c[mask].mean()
                     )
 
@@ -208,12 +348,18 @@ class CalibrationAnalyzer:
         return fig
 
     def plot_confidence_histogram(
-        self, y_true: np.ndarray, probabilities: np.ndarray, n_bins: int = 20
+        self,
+        y_true: np.ndarray,
+        probabilities: np.ndarray,
+        *,
+        classes: Any = None,
+        n_bins: int = 20,
     ) -> go.Figure:
         """Histogram of confidence for correct vs incorrect predictions."""
-        y_true = np.asarray(y_true)
-        confidence = np.max(probabilities, axis=1)
-        correct = np.argmax(probabilities, axis=1) == y_true
+        probs = np.asarray(probabilities, dtype=float)
+        indices = align_target_indices(y_true, classes)
+        confidence = np.max(probs, axis=1)
+        correct = np.argmax(probs, axis=1) == indices
 
         fig = go.Figure()
         fig.add_trace(
@@ -290,25 +436,21 @@ class CalibrationAnalyzer:
         return exp_scaled / exp_scaled.sum(axis=1, keepdims=True)
 
     def find_optimal_temperature(
-        self, y_true: np.ndarray, probabilities: np.ndarray
+        self, y_true: np.ndarray, probabilities: np.ndarray, *, classes: Any = None
     ) -> float:
         """Grid-search for the temperature that minimises ECE."""
-        y_true = np.asarray(y_true)
+        probs = np.asarray(probabilities, dtype=float)
         best_temp, best_ece = 1.0, float("inf")
         for t in np.arange(0.1, 5.1, 0.1):
             m = self.compute_calibration_metrics(
-                y_true, self.apply_temperature_scaling(probabilities, t)
+                y_true,
+                self.apply_temperature_scaling(probs, t),
+                classes=classes,
             )
             if m["ece"] < best_ece:
                 best_ece, best_temp = m["ece"], t
         return round(float(best_temp), 2)
 
     def get_calibration_quality(self, ece: float) -> str:
-        if ece < 0.03:
-            return "Excellent"
-        elif ece < 0.07:
-            return "Good"
-        elif ece < 0.15:
-            return "Moderate"
-        else:
-            return "Poor"
+        """Classify an ECE value using the bound :class:`ScoringPolicy`."""
+        return self._policy.resolve_ece_quality(ece)

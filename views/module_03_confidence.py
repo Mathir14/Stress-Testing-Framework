@@ -5,10 +5,10 @@ import streamlit as st
 
 from core.errors import FrameworkError
 from core.state import AppContext, StateKeys
+from modules.calibration_module import multiclass_brier
 from modules.data_module import DataManager
 from modules.model_module import ModelTrainer
 from utils.metrics import (
-    calculate_brier_score,
     get_confidence_scores,
     get_prediction_entropy,
     identify_high_confidence_errors,
@@ -317,8 +317,17 @@ def render(ctx: AppContext) -> None:
                 )
                 st.plotly_chart(fig_calib, width="stretch")
 
-                # Brier score
-                brier = calculate_brier_score(pred_data["y_true"], pred_data["y_proba"])
+                # Brier score (single owner: modules.calibration_module, ADR-017)
+                classes = getattr(
+                    model_trainer.trained_models.get(pred_data["model_name"]),
+                    "classes_",
+                    None,
+                )
+                brier = multiclass_brier(
+                    pred_data["y_true"],
+                    pred_data["y_proba"],
+                    classes=classes,
+                )
                 st.metric(
                     "Brier Score",
                     f"{brier:.4f}",
@@ -333,12 +342,28 @@ def render(ctx: AppContext) -> None:
 
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.metric("Avg Entropy", f"{entropy_series.mean():.3f}")
-                    st.metric("Max Entropy", f"{entropy_series.max():.3f}")
+                    st.metric(
+                        "Avg Entropy",
+                        f"{entropy_series.mean():.3f}",
+                        help="Mean Shannon entropy in bits (base-2); higher = more uncertain",
+                    )
+                    st.metric(
+                        "Max Entropy",
+                        f"{entropy_series.max():.3f}",
+                        help="Entropy in bits (base-2)",
+                    )
 
                 with col2:
-                    st.metric("Min Entropy", f"{entropy_series.min():.3f}")
-                    st.metric("Std Entropy", f"{entropy_series.std():.3f}")
+                    st.metric(
+                        "Min Entropy",
+                        f"{entropy_series.min():.3f}",
+                        help="Entropy in bits (base-2)",
+                    )
+                    st.metric(
+                        "Std Entropy",
+                        f"{entropy_series.std():.3f}",
+                        help="Entropy in bits (base-2)",
+                    )
 
                 # Entropy distribution
                 fig_entropy = plot_entropy_distribution(

@@ -57,7 +57,12 @@ def render(ctx: AppContext) -> None:
             for mn in trainer.trained_models:
                 try:
                     _, probs = trainer.predict(mn, dm.X_test)
-                    cm_r = cal_an.compute_calibration_metrics(dm.y_test, probs)
+                    model_obj = trainer.trained_models.get(mn)
+                    cm_r = cal_an.compute_calibration_metrics(
+                        dm.y_test,
+                        probs,
+                        classes=getattr(model_obj, "classes_", None),
+                    )
                     rep_cal_ece[mn] = cm_r["ece"]
                 except Exception as exc:
                     # Conventions §3: a blind catch must log (MAJ-004). The model
@@ -94,10 +99,10 @@ def render(ctx: AppContext) -> None:
                     preds_r, probs_r = trainer.predict(mn, dm.X_test)
                     ents = get_prediction_entropy(probs_r)
                     rep_entropy[mn] = float(np.mean(ents))
-                    hce_df = identify_high_confidence_errors(
+                    hce_info = identify_high_confidence_errors(
                         dm.y_test, preds_r, probs_r, threshold=0.9
                     )
-                    rep_hce[mn] = len(hce_df) / max(len(preds_r), 1)
+                    rep_hce[mn] = hce_info["count"] / max(len(preds_r), 1)
                 except Exception as exc:
                     # Conventions §3: log rather than pass. Entropy and the
                     # high-confidence-error rate share one predict() call, so a
@@ -284,7 +289,7 @@ def render(ctx: AppContext) -> None:
                 )
 
             with col_json:
-                st.markdown("### {} JSON")
+                st.markdown("### 🧾 JSON")
                 st.markdown("Full structured data.")
                 json_str = rgen.export_to_json(report)
                 st.download_button(
