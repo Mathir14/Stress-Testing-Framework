@@ -3,14 +3,16 @@ Plotting Utilities
 Helper functions for creating visualizations
 """
 
+from __future__ import annotations
+
 import numpy as np
-import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 
-def plot_confidence_histogram(confidence, correct_mask, bins=20):
+def plot_confidence_histogram(
+    confidence: np.ndarray, correct_mask: np.ndarray, bins: int = 20
+) -> go.Figure:
     """
     Plot confidence histogram split by correctness
 
@@ -59,7 +61,12 @@ def plot_confidence_histogram(confidence, correct_mask, bins=20):
     return fig
 
 
-def plot_confidence_by_class(confidence, predictions, true_labels, class_names=None):
+def plot_confidence_by_class(
+    confidence: np.ndarray,
+    predictions: np.ndarray,
+    true_labels: np.ndarray,
+    class_names: list[str] | None = None,
+) -> go.Figure:
     """
     Plot confidence distribution by predicted class
 
@@ -103,7 +110,9 @@ def plot_confidence_by_class(confidence, predictions, true_labels, class_names=N
     return fig
 
 
-def plot_confidence_accuracy_curve(confidence, correct_mask, n_bins=10):
+def plot_confidence_accuracy_curve(
+    confidence: np.ndarray, correct_mask: np.ndarray, n_bins: int = 10
+) -> go.Figure:
     """
     Plot accuracy vs confidence curve
 
@@ -185,7 +194,12 @@ def plot_confidence_accuracy_curve(confidence, correct_mask, n_bins=10):
     return fig
 
 
-def plot_error_analysis(confidence, predictions, true_labels, threshold=0.8):
+def plot_error_analysis(
+    confidence: np.ndarray,
+    predictions: np.ndarray,
+    true_labels: np.ndarray,
+    threshold: float = 0.8,
+) -> go.Figure:
     """
     Plot error analysis comparing low vs high confidence errors
 
@@ -243,7 +257,9 @@ def plot_error_analysis(confidence, predictions, true_labels, threshold=0.8):
     return fig
 
 
-def plot_entropy_distribution(entropy, correct_mask):
+def plot_entropy_distribution(
+    entropy: np.ndarray, correct_mask: np.ndarray
+) -> go.Figure:
     """
     Plot entropy (uncertainty) distribution
 
