@@ -58,7 +58,7 @@ def _root_modules() -> list[Path]:
     the cycle detector, ``test_no_module_imports_app`` and the widget-key
     contract all consumed :func:`_project_files`, so a file that was not
     literally named ``app.py`` was exempt from all of them while still being
-    importable and shippable.  :func:`test_only_app_py_is_a_top_level_module`
+    importable and shippable.  :func:`test_root_modules_are_exactly_the_declared_set`
     turns that exemption into a loud failure instead of a silent one, and
     :func:`test_root_modules_match_architecture_spec` keeps that failure's
     remedy honest by cross-checking the allowlist against architecture.md §2.2.
@@ -449,31 +449,63 @@ def _attr_chain(node: ast.AST) -> list[str]:
     return list(reversed(parts))
 
 
-def _literal_keys(tree: ast.Module) -> set[str]:
-    """Collect every ``key="..."`` string literal appearing in a call."""
-    keys: set[str] = set()
+def _fstring_template(node: ast.JoinedStr) -> str:
+    """Turn ``f"missing_{col}"`` into the stable template ``missing_{col}``.
+
+    Constant parts keep their text verbatim; each interpolation hole is
+    unparsed, so ``{col}`` and ``{model_sel}`` round-trip exactly.  A hole that
+    carries a conversion or a format spec (``{x!r:.2f}``) cannot be declared
+    deterministically, so it is folded to ``{...}`` — the resulting template
+    matches nothing in the fixture and the gate fails loudly instead of
+    guessing.
+    """
+    parts: list[str] = []
+    for part in node.values:
+        if isinstance(part, ast.Constant):
+            parts.append(part.value)
+        elif (
+            isinstance(part, ast.FormattedValue)
+            and part.conversion == -1
+            and part.format_spec is None
+        ):
+            parts.append("{" + ast.unparse(part.value) + "}")
+        else:
+            parts.append("{...}")
+    return "".join(parts)
+
+
+def _widget_keys(tree: ast.Module) -> tuple[set[str], set[str]]:
+    """Literals and f-string key templates in a module: ``(keys, templates)``.
+
+    F-strings are kept apart from literals because a single
+    ``st.selectbox(..., key=f"missing_{col}")`` writes one distinct persisted
+    session entry per looped column — the template *family* is the unit of
+    review, not any single rendered value (T12).
+    """
+    literals: set[str] = set()
+    templates: set[str] = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         for kw in node.keywords:
-            if (
-                kw.arg == "key"
-                and isinstance(kw.value, ast.Constant)
-                and isinstance(kw.value.value, str)
-            ):
-                keys.add(kw.value.value)
-    return keys
+            if kw.arg != "key":
+                continue
+            if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                literals.add(kw.value.value)
+            elif isinstance(kw.value, ast.JoinedStr):
+                templates.add(_fstring_template(kw.value))
+    return literals, templates
 
 
-def _widget_key_owners() -> list[tuple[Path, set[str]]]:
-    """Every file that could own a widget key, paired with its literal keys.
+def _widget_key_owners() -> list[tuple[Path, set[str], set[str]]]:
+    """Every file that could own a widget key, with literals and templates.
 
     Root-level modules are included as well as the view package: ``app.py`` used
     to own all 64 keys before Wave 5, so a key re-added there must be caught
     rather than ignored because of where it was pasted.
     """
     paths = _root_modules() + _source_files("views")
-    return [(p, _literal_keys(_parse(p))) for p in paths if p.is_file()]
+    return [(p, *_widget_keys(_parse(p))) for p in paths if p.is_file()]
 
 
 def test_nine_page_labels_are_frozen() -> None:
@@ -526,13 +558,13 @@ def test_widget_key_contract_is_unchanged() -> None:
     by_view: dict[str, list[str]] = contract["widget_keys_by_view"]
 
     owners = _widget_key_owners()
-    present_names = {p.name for p, _ in owners}
+    present_names = {p.name for p, _, _ in owners}
     stale = sorted(set(by_view) - present_names)
     assert not stale, f"fixture lists view files that no longer exist: {stale}"
 
     missing: list[str] = []
     extra: list[str] = []
-    for path, actual in owners:
+    for path, actual, _ in owners:
         declared = set(by_view.get(path.name, ()))
         missing += [f"{path.name}:{key}" for key in sorted(declared - actual)]
         extra += [f"{path.name}:{key}" for key in sorted(actual - declared)]
@@ -549,6 +581,50 @@ def test_widget_key_contract_is_unchanged() -> None:
     assert len(seen) == expected_total, (
         f"widget key drift: fixture expects {expected_total} unique keys, "
         f"the union across views is {len(seen)}"
+    )
+
+
+def test_widget_key_templates_are_unchanged() -> None:
+    """§4.8: the interpolated ``key=f"..."`` families are sanctioned as well.
+
+    ``key="foo"`` gates one exact session key, but ``key=f"bar_{name}"`` gates a
+    *family* — one persisted entry per looped column, gauge, or model.  A
+    hand-written literal gate sees none of them, so without this check a
+    developer could add a new f-string key, or repoint an existing one at a
+    different ``{col}``/``{mname}``, and every rendered value would drift from
+    the reviewed contract with the suite still green (T12).
+
+    The declared families live in ``widget_key_templates_by_view`` inside
+    :file:`tests/fixtures/widget_keys.json`:
+
+    * ``module_01_data.py``        →
+      ``missing_{col}`` (the per-column imputation: one selectbox for the
+      detection strategy and one for the fill strategy);
+    * ``module_08_reliability.py`` →
+      ``rel_gauge_overview_{mname}`` and ``rel_gauge_detail_{model_sel}`` (the
+      overview gauge row and the per-``model_sel`` compare gauge).
+
+    Asserted as exact set equality per file, in both directions, exactly like
+    the literal gate above — renaming the template renames the session key for
+    every value the family has ever produced.
+    """
+    contract = _contract()
+    declared: dict[str, list[str]] = contract["widget_key_templates_by_view"]
+    owners = _widget_key_owners()
+    missing: list[str] = []
+    extra: list[str] = []
+    for path, _, actual in owners:
+        expected = set(declared.get(path.name, ()))
+        missing += [f"{path.name}:{tpl}" for tpl in sorted(expected - actual)]
+        extra += [f"{path.name}:{tpl}" for tpl in sorted(actual - expected)]
+    assert not missing, (
+        "widget key templates declared but absent (renamed or dropped?):\n  "
+        + "\n  ".join(missing)
+    )
+    assert not extra, (
+        "undeclared interpolated widget keys found — declare the family in "
+        "tests/fixtures/widget_keys.json and record why, or the key must be a "
+        "literal:\n  " + "\n  ".join(extra)
     )
 
 
@@ -574,7 +650,7 @@ def test_added_widget_keys_are_declared() -> None:
         f"{len(added)} declared addition(s): {sorted(added)}"
     )
     implemented: set[str] = set()
-    for _, keys in _widget_key_owners():
+    for _, keys, _ in _widget_key_owners():
         implemented |= keys
     phantom = sorted(set(added) - implemented)
     assert not phantom, (
@@ -1809,7 +1885,7 @@ def test_root_modules_are_exactly_the_declared_set() -> None:
 def test_root_modules_match_architecture_spec() -> None:
     """§2.2: :data:`ROOT_MODULES` must equal what the specification declares.
 
-    This is the second half of :func:`test_only_app_py_is_a_top_level_module`,
+    This is the second half of :func:`test_root_modules_are_exactly_the_declared_set`,
     and the half that was missing.  That test compares the tree against a
     constant defined in this file, so widening the constant alone made it green —
     while its failure message went on claiming "architecture.md §2.2 declares
@@ -2025,13 +2101,62 @@ T0_TEST_FILES: tuple[str, ...] = (
     "tests/test_cli.py",
 )
 
-#: Project modules the T0 files import, and which must therefore also be
-#: importable with nothing but the standard library present.
+#: Every project module a tier-T0 file is *allowed* to reach (ADR-026.2) —
+#: ``core/*`` and ``main.py`` only, never ``modules/``, ``utils/`` or ``views/``.
+#:
+#: The declaration is **complete over ``core/``** on purpose: before this, only
+#: the three modules the T0 files happened to import were listed, so the first
+#: import of a fourth one escaped the transitive check entirely.  That is the
+#: Critic M9 defect — the file-level gate keyed off :data:`PACKAGES`, i.e. all
+#: four packages, so ``from core.validation import ...`` in a T0 file was
+#: admitted by name *and* unexamined for what it drags in.
+#:
+#: :func:`test_every_core_module_is_declared_in_the_t0_module_set` keeps this
+#: list in step with the directory, so a ninth or tenth ``core`` module cannot
+#: arrive ungoverned.
 T0_PROJECT_MODULES: tuple[str, ...] = (
+    "core/__init__.py",
     "core/config.py",
     "core/errors.py",
+    "core/logging_config.py",
     "core/model_io.py",
+    "core/perturbations.py",
+    "core/reporters.py",
+    "core/scoring.py",
+    "core/state.py",
+    "core/validation.py",
+    "main.py",
 )
+
+#: The subset of :data:`T0_PROJECT_MODULES` importable with **nothing but the
+#: standard library**.  A T0 test file may import these and nothing else project-
+#: local, transitively (``core.model_io`` reaches ``core.config`` and
+#: ``core.errors``; both are in the set).
+#:
+#: ``core/scoring.py`` is here because ADR-021 made it stdlib-only by design —
+#: that is what lets the scoring arithmetic be gated without dragging numpy in.
+#: ``core/validation.py``, ``core/perturbations.py`` and ``core/state.py``
+#: are deliberately **absent**: they import numpy/pandas at module scope, which
+#: is perfectly legal under §2.1 and precisely why a T0 file may not touch them.
+T0_STACK_FREE_MODULES: frozenset[str] = frozenset(
+    {
+        "core/__init__.py",
+        "core/config.py",
+        "core/errors.py",
+        "core/logging_config.py",
+        "core/model_io.py",
+        "core/reporters.py",
+        "core/scoring.py",
+        "main.py",
+    }
+)
+
+#: Project modules that legitimately need the scientific stack at import time.
+#: Every entry is in :data:`T0_PROJECT_MODULES` but not in
+#: :data:`T0_STACK_FREE_MODULES`, and :func:`test_the_stack_needing_class_is_
+#: really_stack_needing` asserts each one genuinely needs it — so the two classes
+#: cannot drift apart unnoticed.
+T0_STACK_NEEDING_MODULES: frozenset[str] = frozenset(T0_PROJECT_MODULES) - T0_STACK_FREE_MODULES
 
 #: The roots a T0 file must never need. Asserted against the *import-time* graph
 #: for project modules, and against the whole file for test files (a deferred
@@ -2045,6 +2170,45 @@ SCIENTIFIC_STACK: frozenset[str] = frozenset(
 )
 
 
+def _module_closure(relpath: str) -> set[str]:
+    """Project modules reachable from ``relpath``'s module-level imports.
+
+    Follows ``core``/``modules``/``utils``/``views``/``main`` imports that run at
+    *import* time — :func:`_module_level_imports` stops at every ``FunctionDef``,
+    so ``core.config``'s deliberately deferred ``core.errors`` edge is treated
+    the same way it is everywhere else in this file.
+
+    Args:
+        relpath: Repository-relative path of the file to start from.
+
+    Returns:
+        Repository-relative paths of every project module the file can reach,
+        including itself if it is a project module.
+    """
+    start = ROOT / relpath
+    seen: set[str] = set()
+    frontier = [start] if start.is_file() else []
+    while frontier:
+        path = frontier.pop()
+        key = str(path.relative_to(ROOT))
+        if key in seen:
+            continue
+        seen.add(key)
+        for name in _module_level_imports(_parse(path)):
+            if _top(name) not in PACKAGES and _top(name) != "main":
+                continue
+            parts = name.split(".")
+            candidate = ROOT / parts[0] / f"{parts[1]}.py" if len(parts) > 1 else (
+                ROOT / parts[0] / "__init__.py"
+            )
+            if candidate.is_file():
+                frontier.append(candidate)
+    # The starting file is a *test* module, not a project module; dropping it
+    # (and anything else outside the four packages) keeps the result a set of
+    # project modules rather than a set that includes ``tests/…`` itself.
+    return {key for key in seen if _top(key) in PACKAGES or _top(key) == "main"}
+
+
 @pytest.mark.parametrize("relpath", T0_TEST_FILES)
 def test_t0_test_file_needs_only_stdlib_and_pytest(relpath: str) -> None:
     """Guard the guard: every tier-T0 test file must stay stdlib + pytest only.
@@ -2056,8 +2220,12 @@ def test_t0_test_file_needs_only_stdlib_and_pytest(relpath: str) -> None:
     failure ADR-010.1 was written to prevent, discovered by reading the tier
     list instead of by running it.
 
-    Project-local imports (``core``, ``main``) are permitted: testing them is the
-    point. What is forbidden is needing the scientific stack to reach them.
+    Project-local imports are permitted only from ``core`` and ``main``
+    (ADR-026.2).  It used to read ``not in PACKAGES``, i.e. all four packages,
+    while this docstring claimed "``core``, ``main``" — so the gate and its own
+    stated rule disagreed, and importing ``modules.x`` in a T0 file was admitted
+    by name.  Which *specific* ``core`` modules are reachable is the second half,
+    in :func:`test_no_t0_test_file_reaches_a_stack_needing_module`.
     """
     path = ROOT / relpath
     assert path.is_file(), f"§10.1 declares {relpath} as tier T0 but it is missing"
@@ -2066,8 +2234,7 @@ def test_t0_test_file_needs_only_stdlib_and_pytest(relpath: str) -> None:
         for name in _imports(_parse(path))
         if _top(name) not in STDLIB
         and _top(name) not in {"pytest", "__future__"}
-        and _top(name) not in PACKAGES
-        and _top(name) not in {"main"}
+        and _top(name) not in {"core", "main"}
     ]
     assert not offenders, (
         "tier T0 must need only the standard library and pytest "
@@ -2075,7 +2242,7 @@ def test_t0_test_file_needs_only_stdlib_and_pytest(relpath: str) -> None:
     )
 
 
-@pytest.mark.parametrize("relpath", T0_PROJECT_MODULES)
+@pytest.mark.parametrize("relpath", sorted(T0_STACK_FREE_MODULES))
 def test_t0_project_module_needs_no_scientific_stack(relpath: str) -> None:
     """The modules T0 tests import must import without the scientific stack.
 
@@ -2090,8 +2257,18 @@ def test_t0_project_module_needs_no_scientific_stack(relpath: str) -> None:
     and is explicitly permitted by §4.5.6, so this walks with
     :func:`_module_level_imports` rather than :func:`_imports`. Asserting the
     stricter rule here would reject the very laziness ADR-010.1 mandates.
+
+    Parametrised over :data:`T0_STACK_FREE_MODULES`, not over the full
+    :data:`T0_PROJECT_MODULES`: ``core/validation.py`` and its siblings import
+    numpy at module scope legally (§2.1), so they are governed by the *other*
+    half — :func:`test_no_t0_test_file_reaches_a_stack_needing_module` — rather
+    than being asserted clean here and failing forever.
     """
     path = ROOT / relpath
+    assert path.is_file(), (
+        f"{relpath} is declared T0-stack-free but is missing; a declaration that "
+        "names a file the tree does not have is a gate that cannot fail"
+    )
     offenders = [
         f"{relpath} imports {name} at module level"
         for name in _module_level_imports(_parse(path))
@@ -2100,6 +2277,219 @@ def test_t0_project_module_needs_no_scientific_stack(relpath: str) -> None:
     assert not offenders, (
         "a module reached by a tier-T0 test imports the scientific stack at "
         "import time (architecture.md §10.1, ADR-010.1):\n  " + "\n  ".join(offenders)
+    )
+
+
+@pytest.mark.parametrize("relpath", T0_TEST_FILES)
+def test_no_t0_test_file_reaches_a_stack_needing_module(relpath: str) -> None:
+    """ADR-026.2: a T0 file may only reach modules the standard library suffices for.
+
+    The file-level gate above checks *root package names*; this one checks
+    *which* modules, transitively.  It is what fails when a T0 test adds
+    ``from core.validation import validate_stress_params`` — a name the file gate
+    admits (``core`` is permitted) but which pulls numpy and pandas in at import
+    time, promoting the suite to T1 with no collection error on a full
+    environment and a hard abort on a bare one.
+
+    The difference between those two environments is the point: on a machine
+    with the stack installed the defect is invisible, so it has to be caught
+    structurally rather than by running the tests.
+    """
+    reached = _module_closure(relpath)
+    offenders = sorted(reached - T0_STACK_FREE_MODULES)
+    assert not offenders, (
+        f"{relpath} reaches project modules a tier-T0 test may not import "
+        "(architecture.md §10.1, ADR-026.2):\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_every_core_module_is_declared_in_the_t0_module_set() -> None:
+    """ADR-026.2: the T0 module declaration is complete over ``core/`` and ``main.py``.
+
+    Before the completeness rule the list held only the three modules the T0
+    files happened to import, so a fourth import added next month was checked by
+    neither the file gate (which only looks at roots) nor this one.  The two
+    directions are asserted separately so neither list can move alone.
+    """
+    on_disk = {f"core/{p.name}" for p in (ROOT / "core").glob("*.py")}
+    on_disk.add("main.py")
+    # ``core/__init__.py`` is empty but is still a module a T0 file may import
+    # (``import core``), so it belongs in the declaration too.
+    declared = set(T0_PROJECT_MODULES)
+    assert declared == on_disk, (
+        "T0_PROJECT_MODULES and the tree disagree "
+        f"(only in declaration: {sorted(declared - on_disk)}; "
+        f"only on disk: {sorted(on_disk - declared)})"
+    )
+    assert T0_STACK_FREE_MODULES | T0_STACK_NEEDING_MODULES == declared
+    assert not (T0_STACK_FREE_MODULES & T0_STACK_NEEDING_MODULES)
+
+
+def test_the_stack_needing_class_is_really_stack_needing() -> None:
+    """Falsification control: each excluded module genuinely imports the stack.
+
+    Without this, the ``T0_STACK_NEEDING_MODULES`` half of the declaration could
+    rot silently — someone could make ``core.validation`` stdlib-only and it would
+    *stay* forbidden in T0 files forever, costing the tier a module it could have
+    used.  The classification has to be a measured property of the file, not a
+    comment that was once true.
+    """
+    for relpath in sorted(T0_STACK_NEEDING_MODULES):
+        offenders = [
+            name
+            for name in _module_level_imports(_parse(ROOT / relpath))
+            if _top(name) in SCIENTIFIC_STACK
+        ]
+        assert offenders, (
+            f"{relpath} is declared stack-needing but imports no scientific root at "
+            "module level; move it into T0_STACK_FREE_MODULES so a T0 test can use it"
+        )
+
+
+# ── §10.1 T1 test modules must skip before they import (ADR-026.5) ───────────
+
+
+def _import_time_stack_roots(path: Path, seen: set[str] | None = None) -> set[str]:
+    """Scientific roots ``path`` needs at *import* time, transitively.
+
+    Both halves of the "a bare run must skip T1 cleanly" promise depend on this:
+    a test file that imports ``modules.reporting_module`` needs pandas and
+    plotly without ever naming them, so an ``importorskip`` for numpy alone does
+    not make the file safe.
+
+    Args:
+        path: File to start from.
+        seen: Paths already walked; mutated across the recursion.
+
+    Returns:
+        The subset of :data:`SCIENTIFIC_STACK` this file transitively imports at
+        module scope.
+    """
+    seen = seen if seen is not None else set()
+    if not path.is_file():
+        return set()
+    key = str(path.relative_to(ROOT))
+    if key in seen:
+        return set()
+    seen.add(key)
+    roots: set[str] = set()
+    for name in _module_level_imports(_parse(path)):
+        top = _top(name)
+        if top in SCIENTIFIC_STACK:
+            roots.add(top)
+        elif top in PACKAGES or top == "main":
+            parts = name.split(".")
+            child = ROOT / parts[0] / (f"{parts[1]}.py" if len(parts) > 1 else "__init__.py")
+            roots |= _import_time_stack_roots(child, seen)
+    return roots
+
+
+def _import_site(tree: ast.Module) -> tuple[list[tuple[int, str]], dict[str, int]]:
+    """Module-level import sites and ``importorskip`` sites, with line numbers.
+
+    Args:
+        tree: Parsed test module.
+
+    Returns:
+        A pair ``(imports, skips)`` where ``imports`` maps every module-level
+        import to its line and ``skips`` maps each argument passed to a
+        module-level ``pytest.importorskip(...)`` to the line it appears on.
+        ``np = pytest.importorskip("numpy")`` counts as a skip because the
+        assignment executes at import time exactly like the bare call.
+    """
+    imports: list[tuple[int, str]] = []
+    skips: dict[str, int] = {}
+    for node in tree.body:
+        names: list[str] = []
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names = [node.module]
+        imports.extend((node.lineno, name) for name in names)
+        if isinstance(node, (ast.Expr, ast.Assign, ast.AnnAssign)):
+            for sub in ast.walk(node):
+                func = sub.func if isinstance(sub, ast.Call) else None
+                if (
+                    isinstance(func, ast.Attribute)
+                    and func.attr == "importorskip"
+                    and sub.args
+                    and isinstance(sub.args[0], ast.Constant)
+                ):
+                    skips.setdefault(str(sub.args[0].value), sub.lineno)
+    return imports, skips
+
+
+def _t1_test_files() -> list[str]:
+    """Every ``tests/test_*.py`` that is not one of the four tier-T0 files."""
+    t0 = set(T0_TEST_FILES)
+    return [
+        str(p.relative_to(ROOT))
+        for p in sorted((ROOT / "tests").glob("test_*.py"))
+        if str(p.relative_to(ROOT)) not in t0
+    ]
+
+
+def test_t1_test_file_list_is_neither_empty_nor_missing_files() -> None:
+    """Guards the parametrisation below from going vacuous.
+
+    If ``glob("test_*.py")`` ever matched nothing — the directory renamed, the
+    tests moved — the parametrised gate would simply not run, which reads
+    identically to a gate that passes.
+    """
+    found = set(_t1_test_files())
+    assert found, "no tier-T1 test files found; the skip gate would then run zero cases"
+    declared_t0 = set(T0_TEST_FILES)
+    assert found & declared_t0 == set(), "a T0 file leaked into the T1 list"
+
+
+@pytest.mark.parametrize("relpath", _t1_test_files())
+def test_t1_test_modules_skip_before_they_import(relpath: str) -> None:
+    """ADR-026.5: every T1 module skips on its stack *before* it needs it.
+
+    A bare ``import numpy`` at module scope is a **collection error**, not a
+    skip: pytest aborts the whole run and no tier-T0 gate executes at all — so
+    "the security suite runs in a bare environment" was false while any T1 file
+    imported the stack without a guard.  The requirement is that every root the
+    file *transitively* needs is declared with ``pytest.importorskip`` on a line
+    that precedes the first import needing it.
+
+    Naming only the roots the file happens to write down would be too weak:
+    ``test_reporting.py`` never mentions pandas, but ``modules.reporting_module``
+    imports it, and a partial environment (numpy present, plotly absent) would
+    collect-error all the same.
+    """
+    path = ROOT / relpath
+    assert path.is_file(), f"{relpath} disappeared from the T1 list"
+    needed = _import_time_stack_roots(path)
+    if not needed:
+        return
+    imports, skips = _import_site(_parse(path))
+
+    def _introduces(name: str) -> bool:
+        top = _top(name)
+        if top in SCIENTIFIC_STACK:
+            return top in needed
+        if top in PACKAGES:
+            parts = name.split(".")
+            child = ROOT / parts[0] / (f"{parts[1]}.py" if len(parts) > 1 else "__init__.py")
+            return bool(_import_time_stack_roots(child) & needed)
+        return False
+
+    first_needed = next((line for line, name in imports if _introduces(name)), None)
+    assert first_needed is not None, (
+        f"{relpath} needs {sorted(needed)} but no module-level import was found that "
+        "introduces one — the skip gate cannot place itself"
+    )
+    unguarded = [
+        root
+        for root in sorted(needed)
+        if root not in skips or skips[root] > first_needed
+    ]
+    assert not unguarded, (
+        f"{relpath} needs {unguarded} but does not pytest.importorskip them before "
+        f"line {first_needed}, where it starts importing them (ADR-026.5); on a bare "
+        "interpreter this is a collection error, which aborts the run before any "
+        "tier-T0 gate can execute"
     )
 
 

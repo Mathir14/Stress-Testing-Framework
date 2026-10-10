@@ -1,0 +1,112 @@
+{
+  "_comment": "Frozen session contract for the Wave 5 view extraction. `widget_keys_by_view` are the Streamlit `key=` literals across the nine view modules (the 64 `widget_keys_total`/`widget_keys_unique`); `widget_key_templates_by_view` are the interpolated `key=f\"...\"` families (one persisted session entry per rendered column/model, reviewed as a family rather than as a literal); `page_labels` are the sidebar labels. All three are user-visible persisted state, so none may drift without a deliberate change here. Asserted by tests/test_architecture.py (T0) and tests/test_app_smoke.py.",
+  "source": "views/module_01_data.py .. views/module_09_reports.py",
+  "python": "3.14.7",
+  "page_labels": [
+    "1️⃣ Data Management",
+    "2️⃣ Baseline Modeling",
+    "3️⃣ Prediction & Confidence",
+    "4️⃣ Stress Testing",
+    "5️⃣ Post-Stress Evaluation",
+    "6️⃣ Calibration Analysis",
+    "7️⃣ Model Comparison",
+    "8️⃣ Reliability Scoring",
+    "9️⃣ Visualization & Reports"
+  ],
+  "widget_keys_by_view": {
+    "module_01_data.py": [],
+    "module_02_baseline.py": [
+      "fi_model",
+      "best_model_dataset",
+      "save_model",
+      "load_model_file",
+      "load_model_name",
+      "load_model_trust"
+    ],
+    "module_03_confidence.py": [
+      "pred_model_select",
+      "pred_dataset_select",
+      "generate_predictions",
+      "download_predictions",
+      "confidence_threshold",
+      "error_threshold",
+      "download_errors"
+    ],
+    "module_04_stress.py": [
+      "run_single_stress",
+      "run_batch_stress",
+      "stress_model_select",
+      "stress_dataset_select",
+      "single_stress_type",
+      "batch_stress_model",
+      "batch_stress_dataset",
+      "download_stress_results"
+    ],
+    "module_05_post_stress.py": [
+      "post_stress_model",
+      "vuln_model",
+      "type_model",
+      "rec_model",
+      "compare_models"
+    ],
+    "module_06_calibration.py": [
+      "cal_bins_1",
+      "btn_cal_1",
+      "cal_ds_2",
+      "btn_cal_2",
+      "btn_cal_3",
+      "temp_slider",
+      "cal_model_1",
+      "cal_ds_1",
+      "cal_model_3",
+      "cal_ds_3",
+      "cal_model_4",
+      "cal_ds_4",
+      "btn_autotemp",
+      "btn_applytemp"
+    ],
+    "module_07_comparison.py": [],
+    "module_08_reliability.py": [
+      "rel_dataset",
+      "rel_stacked_bar",
+      "rel_total_bar",
+      "rel_radar",
+      "rel_model_sel",
+      "rel_rec_model"
+    ],
+    "module_09_reports.py": [
+      "rep_dataset",
+      "rep_perf",
+      "rep_heatmap",
+      "rep_cal",
+      "rep_radar",
+      "rep_gauges",
+      "gal_perf",
+      "dl_csv",
+      "dl_json",
+      "dl_html",
+      "dl_full_json",
+      "gal_rob",
+      "gal_cal",
+      "gal_radar",
+      "dl_pdf",
+      "dl_perf_csv",
+      "dl_rob_csv",
+      "dl_rel_csv"
+    ]
+  },
+  "widget_keys_total": 64,
+  "widget_keys_unique": 64,
+  "widget_key_templates_by_view": {
+    "module_01_data.py": [
+      "missing_{col}"
+    ],
+    "module_08_reliability.py": [
+      "rel_gauge_overview_{mname}",
+      "rel_gauge_detail_{model_sel}"
+    ]
+  },
+  "added_during_remediation": {
+    "load_model_trust": "ADR-001: the load trust confirmation's checkbox key; the 63 pre-existing keys are unchanged"
+  }
+}
