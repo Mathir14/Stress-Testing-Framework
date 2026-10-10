@@ -245,7 +245,15 @@ class ModelArtifactStore:
                 },
             )
 
-        root = self.policy.root_dir.resolve()
+        root_dir = self.policy.root_dir
+        if root_dir.is_symlink():
+            raise ArtifactPathError(
+                f"Store root {root_dir} is a symbolic link. The store refuses to "
+                "resolve artifacts through a link, which could retarget the whole "
+                "store at a directory it never attested.",
+                context={"filename": filename, "root_dir": str(root_dir)},
+            )
+        root = root_dir.resolve()
         candidate = root / filename
         is_link = candidate.is_symlink()
         resolved = candidate.resolve()
@@ -289,6 +297,31 @@ class ModelArtifactStore:
                 context={"filename": path.name, "errno": getattr(exc, "errno", None)},
             ) from exc
 
+    @staticmethod
+    def _read_bytes(path: Path) -> bytes:
+        """Read an artifact into one buffer, typing every ``OSError``.
+
+        The buffer returned here is the *only* read of the file: the digest is
+        computed over it and ``pickle.loads`` consumes the same bytes, so a
+        hash-then-reopen TOCTOU window cannot exist (ADR-024).
+
+        Args:
+            path: Resolved artifact path.
+
+        Returns:
+            bytes: The complete file contents.
+
+        Raises:
+            ArtifactError: The filesystem refused the read.
+        """
+        try:
+            return path.read_bytes()
+        except OSError as exc:
+            raise ArtifactError(
+                f"Could not read model artifact {path.name!r}: {exc.strerror or exc}.",
+                context={"filename": path.name, "errno": getattr(exc, "errno", None)},
+            ) from exc
+
     # ── Manifest ──────────────────────────────────────────────────────────────
 
     def _read_manifest(self) -> dict[str, Any]:
@@ -302,17 +335,23 @@ class ModelArtifactStore:
             dict: ``{"format_version": int, "artifacts": dict}``.
         """
         path = self.manifest_path
+        if path.is_symlink():
+            raise ArtifactIntegrityError(
+                f"Attestation manifest {path} is a symbolic link. The store reads "
+                "its manifest only from a regular file it owns, so one name cannot "
+                "address attestations the store never wrote.",
+                context={"manifest": str(path)},
+            )
         try:
             raw = path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return {"format_version": MANIFEST_FORMAT_VERSION, "artifacts": {}}
         except OSError as exc:
-            logger.warning(
-                "Could not read %s (%s); treating every artifact as unattested.",
-                path,
-                exc.strerror or exc,
-            )
-            return {"format_version": MANIFEST_FORMAT_VERSION, "artifacts": {}}
+            raise ArtifactError(
+                f"Could not read the attestation manifest {path}: "
+                f"{exc.strerror or exc}.",
+                context={"manifest": str(path), "errno": getattr(exc, "errno", None)},
+            ) from exc
 
         try:
             payload = json.loads(raw)
@@ -585,9 +624,11 @@ class ModelArtifactStore:
         """Load an attested artifact, with the full gate chain in order.
 
         Order (architecture.md §4.5.5): resolve → name-length cap → existence →
-        size cap → attestation → estimator type gate.  ``trust=True`` bypasses
-        **only** the attestation step: containment controls are not consent
-        controls, and neither is the type gate.
+        size cap → read-once buffer → digest(buffer) vs manifest → estimator type
+        gate.  ``trust=True`` bypasses **only** the attestation step: containment
+        controls are not consent controls, and neither is the type gate.  The
+        digest is computed over the buffer that is then deserialised, so the
+        verified bytes are the loaded bytes (ADR-024).
 
         Args:
             filename: Bare ``.pkl`` filename.
@@ -627,8 +668,27 @@ class ModelArtifactStore:
                 },
             )
 
+        # Read the artifact exactly once.  The digest below is computed over
+        # *this* buffer and ``pickle.loads`` consumes the same bytes, so the
+        # bytes that were verified are the bytes that are deserialised — no
+        # hash-then-reopen TOCTOU window (ADR-024, run-015 M6).
+        buffer = self._read_bytes(path)
+        size_bytes = len(buffer)
+        if size_bytes > self.policy.max_size_bytes:
+            # The file grew between the cheap stat and the read; re-check the
+            # bytes we actually hold rather than trusting the earlier size.
+            raise ArtifactIntegrityError(
+                f"Model artifact {filename!r} is {size_bytes} bytes, exceeding the "
+                f"{self.policy.max_size_bytes}-byte limit. Nothing was loaded.",
+                context={
+                    "filename": filename,
+                    "size_bytes": size_bytes,
+                    "max_size_bytes": self.policy.max_size_bytes,
+                },
+            )
+
         entry = self._read_manifest().get("artifacts", {}).get(filename)
-        actual = self._sha256(path)
+        actual = hashlib.sha256(buffer).hexdigest()
 
         if entry is None:
             if not trust:
@@ -667,7 +727,7 @@ class ModelArtifactStore:
                     actual[:12],
                 )
 
-        model = self._deserialise(path)
+        model = self._deserialise(buffer, filename)
         record = self._record_from_entry(filename, path, actual, size_bytes, entry)
         self._assert_estimator(model, filename)
         logger.info("Loaded model artifact %s (%d bytes)", filename, size_bytes)
@@ -714,15 +774,26 @@ class ModelArtifactStore:
 
     # ── Internals used by the public methods ──────────────────────────────────
 
-    def _deserialise(self, path: Path) -> Any:
+    def _deserialise(self, payload: bytes, filename: str) -> Any:
+        """Deserialise the exact buffer ``load`` already hashed (ADR-024).
+
+        Args:
+            payload: The verified file contents.
+            filename: Bare filename, for the error context.
+
+        Returns:
+            Any: The unpickled object.
+
+        Raises:
+            ArtifactIntegrityError: The payload is not a valid pickle.
+        """
         try:
-            with open(path, "rb") as handle:
-                return pickle.load(handle)
+            return pickle.loads(payload)
         except Exception as exc:  # noqa: BLE001 - a bad payload is ours to type
             raise ArtifactIntegrityError(
-                f"Model artifact {path.name!r} could not be deserialised: "
+                f"Model artifact {filename!r} could not be deserialised: "
                 f"{type(exc).__name__}: {exc}",
-                context={"filename": path.name},
+                context={"filename": filename},
             ) from exc
 
     def _assert_estimator(self, model: Any, filename: str) -> None:
