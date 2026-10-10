@@ -71,15 +71,26 @@ def render(ctx: AppContext) -> None:
                     y = data["y_val"] if dataset_cal == "Validation" else data["y_test"]
 
                     if hasattr(model, "predict_proba"):
-                        probabilities = model.predict_proba(X)
-                        y_arr = np.asarray(y)
-                        classes = getattr(model, "classes_", None)
+                        with st.spinner("Computing calibration metrics..."):
+                            probabilities = model.predict_proba(X)
+                            y_arr = np.asarray(y)
+                            classes = getattr(model, "classes_", None)
 
-                        metrics = calibration_analyzer.compute_calibration_metrics(
-                            y_arr, probabilities, classes=classes, n_bins=n_bins_cal
-                        )
+                            metrics = calibration_analyzer.compute_calibration_metrics(
+                                y_arr, probabilities, classes=classes, n_bins=n_bins_cal
+                            )
 
                         quality = calibration_analyzer.get_calibration_quality(metrics["ece"])
+
+                        # conventions §7: the action must report success or a
+                        # rendered ``FrameworkError``.  The quality-specific
+                        # message below varies (info/warning/error), so an
+                        # explicit success is emitted first to guarantee the
+                        # action is reported regardless of the quality band.
+                        st.success(
+                            f"✅ Calibration metrics computed for {model_cal} "
+                            f"(ECE = {metrics['ece']:.4f}, quality: {quality})."
+                        )
 
                         # Quick metric strip
                         c1, c2, c3, c4 = st.columns(4)
@@ -148,15 +159,18 @@ def render(ctx: AppContext) -> None:
                     )
 
                     all_metrics = {}
-                    for (
-                        mname,
-                        model,
-                    ) in model_trainer.trained_models.items():
-                        if hasattr(model, "predict_proba"):
-                            probs = model.predict_proba(X)
-                            all_metrics[mname] = calibration_analyzer.compute_calibration_metrics(
-                                y, probs, classes=getattr(model, "classes_", None)
-                            )
+                    with st.spinner("Computing calibration metrics for all models..."):
+                        for (
+                            mname,
+                            model,
+                        ) in model_trainer.trained_models.items():
+                            if hasattr(model, "predict_proba"):
+                                probs = model.predict_proba(X)
+                                all_metrics[mname] = (
+                                    calibration_analyzer.compute_calibration_metrics(
+                                        y, probs, classes=getattr(model, "classes_", None)
+                                    )
+                                )
 
                     if all_metrics:
                         # Summary table
@@ -222,15 +236,18 @@ def render(ctx: AppContext) -> None:
                     y = np.asarray(data["y_val"] if dataset_cls == "Validation" else data["y_test"])
 
                     if hasattr(model, "predict_proba"):
-                        probs = model.predict_proba(X)
-                        model_classes = getattr(model, "classes_", None)
-                        class_names = (
-                            [str(c) for c in model.classes_] if hasattr(model, "classes_") else None
-                        )
+                        with st.spinner("Computing per-class calibration..."):
+                            probs = model.predict_proba(X)
+                            model_classes = getattr(model, "classes_", None)
+                            class_names = (
+                                [str(c) for c in model.classes_]
+                                if hasattr(model, "classes_")
+                                else None
+                            )
 
-                        per_class_df = calibration_analyzer.compute_per_class_calibration(
-                            y, probs, classes=model_classes, class_names=class_names
-                        )
+                            per_class_df = calibration_analyzer.compute_per_class_calibration(
+                                y, probs, classes=model_classes, class_names=class_names
+                            )
 
                         st.dataframe(per_class_df, width="stretch")
 
@@ -259,6 +276,8 @@ def render(ctx: AppContext) -> None:
                         st.plotly_chart(fig_cls, width="stretch")
 
                         worst_cls = per_class_df.loc[per_class_df["ECE"].idxmax(), "Class"]
+                        # conventions §7: report the completed mutating action.
+                        st.success(f"✅ Per-class calibration computed for {model_cls}.")
                         st.info(
                             f"📌 Worst-calibrated class: **{worst_cls}** — consider targeted recalibration."
                         )
@@ -313,15 +332,24 @@ def render(ctx: AppContext) -> None:
                             temperature = opt_t
 
                         # Original metrics
-                        orig_metrics = calibration_analyzer.compute_calibration_metrics(
-                            y, probs, classes=temp_classes
-                        )
-                        # Scaled metrics
-                        scaled_probs = calibration_analyzer.apply_temperature_scaling(
-                            probs, temperature
-                        )
-                        scaled_metrics = calibration_analyzer.compute_calibration_metrics(
-                            y, scaled_probs, classes=temp_classes
+                        with st.spinner("Applying temperature scaling..."):
+                            orig_metrics = calibration_analyzer.compute_calibration_metrics(
+                                y, probs, classes=temp_classes
+                            )
+                            # Scaled metrics
+                            scaled_probs = calibration_analyzer.apply_temperature_scaling(
+                                probs, temperature
+                            )
+                            scaled_metrics = calibration_analyzer.compute_calibration_metrics(
+                                y, scaled_probs, classes=temp_classes
+                            )
+
+                        # conventions §7: the applied action must report success.
+                        # (The auto-find branch above already reports its own
+                        # success; this makes the apply-only path report too.)
+                        st.success(
+                            f"✅ Temperature scaling applied to {model_temp} at "
+                            f"T = {temperature}."
                         )
 
                         st.markdown("---")

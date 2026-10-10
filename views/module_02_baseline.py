@@ -297,10 +297,16 @@ def render(ctx: AppContext) -> None:
                     if st.button("💾 Save Model"):
                         # The store sanitises the filename and asserts containment,
                         # so the UI no longer joins user input onto a path.
+                        # conventions §7: this mutating action must report success
+                        # or a rendered ``FrameworkError``.  ``save_model`` returns
+                        # the attestation record, so the confirmation names the
+                        # file that was actually written.
                         try:
-                            model_trainer.save_model(save_model, filename)
+                            record = model_trainer.save_model(save_model, filename)
                         except FrameworkError as exc:
                             render_error(exc)
+                        else:
+                            st.success(f"✅ Model '{save_model}' saved as {record.name}.")
                 else:
                     st.info("No trained models to save")
 

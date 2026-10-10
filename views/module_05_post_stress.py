@@ -354,51 +354,68 @@ def render(ctx: AppContext) -> None:
                         # conventions §7: a mutating action reports success **or**
                         # a rendered ``FrameworkError`` (see the Calculate
                         # Robustness Score handler above).
-                        try:
-                            # Load the correct per-model results for each
-                            for model in models_to_compare:
-                                per_model_results = ctx.store[
-                                    StateKeys.BATCH_STRESS_RESULTS_BY_MODEL
-                                ][model]
-                                post_stress_analyzer.add_batch_results(per_model_results, model)
+                        with st.spinner("Comparing model robustness..."):
+                            summary_df = None
+                            try:
+                                # Load the correct per-model results for each
+                                for model in models_to_compare:
+                                    per_model_results = ctx.store[
+                                        StateKeys.BATCH_STRESS_RESULTS_BY_MODEL
+                                    ][model]
+                                    post_stress_analyzer.add_batch_results(
+                                        per_model_results, model
+                                    )
 
-                            # Comparison chart
-                            comparison_fig = post_stress_analyzer.compare_model_robustness(
-                                models_to_compare
-                            )
-                        except FrameworkError as exc:
-                            render_error(exc)
-                            comparison_fig = None
-
-                        if comparison_fig:
-                            st.plotly_chart(comparison_fig, width="stretch")
-
-                            # Summary table
-                            st.markdown("---")
-                            st.subheader("📋 Robustness Score Summary")
-
-                            summary_data = []
-                            for model in models_to_compare:
-                                post_stress_analyzer.calculate_robustness_score(model)
-                                scores = post_stress_analyzer.robustness_scores[model]
-                                summary_data.append(
-                                    {
-                                        "Model": model,
-                                        "Overall Score": f"{scores['overall_score']:.1f}",
-                                        "Accuracy Retention": f"{scores['accuracy_retention']:.1f}%",
-                                        "Prediction Stability": f"{scores['prediction_stability']:.1f}%",
-                                        "Consistency": f"{scores['performance_consistency']:.1f}%",
-                                    }
+                                # Comparison chart
+                                comparison_fig = (
+                                    post_stress_analyzer.compare_model_robustness(models_to_compare)
                                 )
 
-                            summary_df = pd.DataFrame(summary_data)
-                            st.dataframe(summary_df, width="stretch")
+                                # Summary table — ``calculate_robustness_score``
+                                # raises ``FrameworkError`` for a model with no
+                                # batch results, so it belongs inside this guard
+                                # as well (T13).  It used to sit *after* the
+                                # comparison outside the ``try`` and escaped as a
+                                # raw Streamlit traceback once the chart had
+                                # already rendered.
+                                summary_data = []
+                                for model in models_to_compare:
+                                    post_stress_analyzer.calculate_robustness_score(model)
+                                    scores = post_stress_analyzer.robustness_scores[model]
+                                    summary_data.append(
+                                        {
+                                            "Model": model,
+                                            "Overall Score": f"{scores['overall_score']:.1f}",
+                                            "Accuracy Retention": (
+                                                f"{scores['accuracy_retention']:.1f}%"
+                                            ),
+                                            "Prediction Stability": (
+                                                f"{scores['prediction_stability']:.1f}%"
+                                            ),
+                                            "Consistency": (
+                                                f"{scores['performance_consistency']:.1f}%"
+                                            ),
+                                        }
+                                    )
 
-                            best_idx = summary_df["Overall Score"].astype(float).idxmax()
-                            best_model = summary_df.iloc[best_idx]["Model"]
-                            st.success(f"🏆 **Most Robust Model:** {best_model}")
-                        else:
-                            st.warning("Could not generate comparison.")
+                                summary_df = pd.DataFrame(summary_data)
+                            except FrameworkError as exc:
+                                render_error(exc)
+                                comparison_fig = None
+
+                            if comparison_fig:
+                                st.plotly_chart(comparison_fig, width="stretch")
+
+                                # Summary table
+                                st.markdown("---")
+                                st.subheader("📋 Robustness Score Summary")
+                                st.dataframe(summary_df, width="stretch")
+
+                                best_idx = summary_df["Overall Score"].astype(float).idxmax()
+                                best_model = summary_df.iloc[best_idx]["Model"]
+                                st.success(f"🏆 **Most Robust Model:** {best_model}")
+                            else:
+                                st.warning("Could not generate comparison.")
 
         # TAB 5: Recommendations
         with tab5:
@@ -433,6 +450,19 @@ def render(ctx: AppContext) -> None:
 
                     for rec in recommendations:
                         st.markdown(rec)
+
+                    # conventions §7: the action must report success or a
+                    # rendered ``FrameworkError``.  An empty list is still a
+                    # completed computation, so the confirmation is unconditional.
+                    if recommendations:
+                        st.success(
+                            f"✅ Generated {len(recommendations)} recommendations "
+                            f"for {selected_model_rec}."
+                        )
+                    else:
+                        st.warning(
+                            f"No recommendations were produced for {selected_model_rec}."
+                        )
 
                     st.markdown("---")
 
