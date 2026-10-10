@@ -5,6 +5,7 @@ Comprehensive side-by-side comparison of all trained models.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import numpy as np
@@ -12,7 +13,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from core.config import ReliabilityWeights, ScoringPolicy, get_config
-from core.scoring import calibration_fraction
+from core.scoring import calibration_fraction, performance_fraction
 
 #: Composite components, in display order.  The weights themselves live in
 #: :class:`core.config.ScoringPolicy` (single owner, ADR-018); this tuple only
@@ -272,14 +273,24 @@ class ModelComparator:
         ``None`` so the caller can apply the fixed-denominator zero policy
         without confusing it with a genuinely zero score.
         """
+        # The performance transform has one owner (core.scoring, ADR-021): this
+        # used to inline ``(accuracy + f1) / 2``, so a clamp or ``NaN`` policy
+        # fixed in the shared transform would silently not apply here.
         components: dict[str, float | None] = {
-            "performance": ((vals["accuracy"] + vals["f1"]) / 2) * 100.0
+            "performance": performance_fraction(vals["accuracy"], vals["f1"]) * 100.0
         }
         available = ["performance"]
         missing: list[str] = []
 
         if robustness_dict and model in robustness_dict:
-            components["robustness"] = float(robustness_dict[model])
+            # A non-finite or out-of-range robustness reading scores zero rather
+            # than escaping into the published composite (run-015 review): the
+            # in-app source is finite, but ``rate_models`` is public and a
+            # ``NaN`` here would otherwise produce a ``NaN`` composite and grade.
+            robustness = float(robustness_dict[model])
+            if math.isnan(robustness):
+                robustness = 0.0
+            components["robustness"] = min(max(robustness, 0.0), 100.0)
             available.append("robustness")
         else:
             components["robustness"] = None

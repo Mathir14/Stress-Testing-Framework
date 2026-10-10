@@ -214,3 +214,51 @@ def test_composite_adding_a_zero_component_keeps_the_score():
     before = comparator.compute_composite_score(_metrics())
     after = comparator.compute_composite_score(_metrics(), {"M": 0.0})
     assert before["M"] == after["M"]
+
+
+# ── Non-finite evidence must not escape either engine ─────────────────────────
+
+
+def test_reliability_total_is_finite_for_nan_evidence():
+    """``NaN`` scores the no-credit floor; it never reaches the published total.
+
+    Before this, ``NaN`` defeated the range comparisons in ``core.scoring`` and
+    propagated into ``total``/``grade`` (run-015 review).  A ``NaN`` measurement
+    is *unknown*, so the model must score at least as low as the same model with
+    a genuinely worst-case (zero-credit) measurement — never higher.
+    """
+    nan = float("nan")
+    scorer = ReliabilityScorer()
+    damaged = scorer.score_model(
+        "m",
+        accuracy=nan,
+        f1=nan,
+        ece=nan,
+        avg_drop=nan,
+        avg_entropy=nan,
+        hce_rate=nan,
+        n_classes=2,
+    )
+    assert np.isfinite(damaged["total"])
+    assert np.isfinite(damaged["robustness"])
+
+    worst = scorer.score_model(
+        "m",
+        accuracy=0.0,
+        f1=0.0,
+        ece=scorer.weights.ece_cap,
+        avg_drop=scorer.weights.drop_cap,
+        avg_entropy=10.0,
+        hce_rate=1.0,
+        n_classes=2,
+    )
+    assert damaged["total"] <= worst["total"]
+
+
+def test_composite_is_finite_for_nan_evidence():
+    nan = float("nan")
+    comparator = ModelComparator()
+    composite = comparator.compute_composite_score(
+        _metrics(accuracy=nan, f1=nan), {"M": nan}, {"M": nan}
+    )
+    assert np.isfinite(composite["M"])

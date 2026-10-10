@@ -41,7 +41,19 @@ __all__ = [
 
 
 def _clamp01(value: float) -> float:
-    """Clamp a fraction into ``[0.0, 1.0]``."""
+    """Clamp a fraction into ``[0.0, 1.0]``, mapping ``NaN`` to ``0.0``.
+
+    ``NaN`` is handled explicitly rather than by the two range comparisons: both
+    ``nan <= 0.0`` and ``nan >= 1.0`` are ``False``, so a ``NaN`` would fall
+    through and escape the ``[0.0, 1.0]`` contract this module exists to
+    guarantee — propagating into a component, the total, the letter grade and
+    the report gauge.  ``NaN`` therefore takes the no-credit floor, which is
+    both what the pre-ADR-021 ``max(0.0, ...)`` expression produced and the
+    correct reading of the policy: a measurement too degenerate to be finite is
+    not evidence of robustness or calibration (run-015 review).
+    """
+    if math.isnan(value):
+        return 0.0
     if value <= 0.0:
         return 0.0
     if value >= 1.0:
@@ -116,13 +128,21 @@ def confidence_fraction(
         float: The weighted quality fraction, clamped to ``[0.0, 1.0]``.
     """
     max_entropy = math.log2(max(int(n_classes), 2))
-    if max_entropy <= 0.0:  # pragma: no cover - max(n_classes, 2) >= 2 => >= 1 bit
+    entropy = float(avg_entropy)
+    hce = float(hce_rate)
+    if math.isnan(entropy):
+        # A non-finite measurement is *unknown*, not *zero* — and here zero would
+        # be the best possible score (perfectly peaked predictions), so ``NaN``
+        # must take the maximum-damage floor instead.  ``_clamp01(nan)`` would
+        # return the no-damage floor and invert into a full-confidence quarter,
+        # i.e. credit for evidence that does not exist (run-015 review).
+        normalised = 1.0
+    elif max_entropy <= 0.0:  # pragma: no cover - max(n_classes, 2) >= 2 => >= 1 bit
         normalised = 0.0
     else:
-        normalised = _clamp01(float(avg_entropy) / max_entropy)
-    return _clamp01(
-        (1.0 - normalised) * 0.5 + (1.0 - _clamp01(float(hce_rate))) * 0.5
-    )
+        normalised = _clamp01(entropy / max_entropy)
+    hce_term = 1.0 if math.isnan(hce) else _clamp01(hce)
+    return _clamp01((1.0 - normalised) * 0.5 + (1.0 - hce_term) * 0.5)
 
 
 def mean_performance_drop(per_model_stress: Mapping[str, Any]) -> float | None:

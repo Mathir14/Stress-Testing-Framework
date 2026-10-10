@@ -308,3 +308,40 @@ def test_recommendation_reason_carries_the_measured_numbers(
     assert "0.900" in rec["reason"]
     assert "0.850" in rec["reason"]
     assert "60.0" in rec["reason"]
+
+
+# ── Non-finite inputs must not escape into the published composite ────────────
+
+
+def test_nan_evidence_never_produces_a_non_finite_composite(comparator: ModelComparator):
+    """A ``NaN`` metric, robustness or ECE floors to zero, never ``NaN``.
+
+    ``NaN`` defeats both range comparisons, so before this the composite (and the
+    grade derived from it) could be ``NaN`` for degenerate evidence — a silently
+    corrupt published score rather than a rendered error (run-015 review).
+    """
+    import math
+
+    assessment = comparator.rate_models(
+        _metrics(accuracy=float("nan"), f1=float("nan")),
+        {"M": float("nan")},
+        {"M": float("nan")},
+    )["M"]
+    assert math.isfinite(assessment["composite"])
+    assert assessment["composite"] == 0.0
+    for value in assessment["components"].values():
+        assert value is None or math.isfinite(value)
+
+
+def test_performance_component_uses_the_shared_transform(comparator: ModelComparator):
+    """The comparator must not restate ``(accuracy + f1) / 2`` inline.
+
+    A clamp or ``NaN`` policy fixed in ``core.scoring`` would silently not apply
+    to a hand-copied formula here (single-owner rule, ADR-021).
+    """
+    from core.scoring import performance_fraction
+
+    assessment = comparator.rate_models(_metrics(accuracy=0.8, f1=0.6))["M"]
+    assert assessment["components"]["performance"] == pytest.approx(
+        performance_fraction(0.8, 0.6) * 100.0
+    )

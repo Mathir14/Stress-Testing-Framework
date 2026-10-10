@@ -168,3 +168,51 @@ def test_combine_fractions_does_not_renormalise_weights() -> None:
     fractions = {"performance": 0.5, "robustness": 0.5}
     weights = {"performance": 1.0, "robustness": 1.0}
     assert combine_fractions(fractions, weights) == pytest.approx(1.0)
+
+
+# ── Non-finite (NaN) inputs ───────────────────────────────────────────────────
+#
+# ``NaN`` is the one float that defeats both range comparisons (``nan <= 0.0``
+# and ``nan >= 1.0`` are both ``False``), so it escaped the module's stated
+# ``[0.0, 1.0]`` contract entirely and propagated into the published total, the
+# letter grade and the report gauge.  A degenerate measurement is *unknown*, not
+# *good*, so it takes the no-credit floor (run-015 review regression).
+
+NAN = float("nan")
+
+
+def test_performance_fraction_rejects_nan() -> None:
+    assert performance_fraction(NAN, NAN) == 0.0
+
+
+def test_calibration_fraction_rejects_nan() -> None:
+    assert calibration_fraction(NAN, ece_cap=0.5) == 0.0
+
+
+def test_robustness_fraction_rejects_nan() -> None:
+    assert robustness_fraction(NAN, drop_cap=0.5) == 0.0
+
+
+def test_confidence_fraction_rejects_nan_entropy_as_worst_not_best() -> None:
+    """``NaN`` entropy must score the *worst* confidence, not the best.
+
+    ``_clamp01(nan)`` returns ``0.0`` (no damage), which is correct for
+    robustness/calibration but would invert into a *perfect* confidence quarter
+    here, because a low entropy is the good outcome.  ``NaN`` therefore floors
+    the entropy half explicitly; the valid HCE half still scores normally.
+    """
+    assert confidence_fraction(NAN, 0.0, n_classes=2) == pytest.approx(0.5)
+    assert confidence_fraction(0.0, NAN, n_classes=2) == pytest.approx(0.5)
+    assert confidence_fraction(NAN, NAN, n_classes=2) == 0.0
+
+
+def test_every_fraction_is_finite_for_nan_inputs() -> None:
+    """The module contract: no ``*_fraction`` may return a non-finite value."""
+    for value in (
+        performance_fraction(NAN, NAN),
+        calibration_fraction(NAN, ece_cap=0.5),
+        robustness_fraction(NAN, drop_cap=0.5),
+        confidence_fraction(NAN, NAN, n_classes=2),
+    ):
+        assert math.isfinite(value)
+        assert 0.0 <= value <= 1.0
