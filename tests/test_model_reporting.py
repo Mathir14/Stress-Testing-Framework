@@ -25,6 +25,12 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip("numpy", reason="ModelTrainer pulls the scientific stack")
+pytest.importorskip("pandas", reason="ModelTrainer pulls the scientific stack")
+pytest.importorskip("sklearn", reason="ModelTrainer pulls the scientific stack")
+pytest.importorskip("xgboost", reason="ModelTrainer pulls the scientific stack")
+pytest.importorskip("plotly", reason="ModelTrainer pulls the scientific stack")
+
 from core.errors import FrameworkError
 from core.model_io import ArtifactRecord
 from modules.model_module import ModelTrainer

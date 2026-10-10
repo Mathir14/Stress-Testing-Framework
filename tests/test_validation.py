@@ -26,6 +26,9 @@ from typing import Any
 
 import pytest
 
+pytest.importorskip("numpy", reason="core.validation imports numpy at module scope")
+pytest.importorskip("pandas", reason="core.validation imports pandas at module scope")
+
 from core.config import StressBounds, get_config
 from core.errors import (
     ParameterOutOfRangeError,

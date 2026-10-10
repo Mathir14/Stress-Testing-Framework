@@ -25,8 +25,13 @@ from __future__ import annotations
 
 import itertools
 
-import numpy as np
 import pytest
+
+pytest.importorskip("numpy", reason="score-monotonicity tests need numpy")
+pytest.importorskip("pandas", reason="the scorers pull the scientific stack")
+pytest.importorskip("plotly", reason="the scorers pull the scientific stack")
+
+import numpy as np  # noqa: E402 - after importorskip by design
 
 from modules.comparison_module import ModelComparator
 from modules.reliability_module import ReliabilityScorer

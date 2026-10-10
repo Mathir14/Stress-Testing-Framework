@@ -23,6 +23,10 @@ from __future__ import annotations
 
 import pytest
 
+pytest.importorskip("numpy", reason="the comparator needs the scientific stack")
+pytest.importorskip("pandas", reason="the comparator needs the scientific stack")
+pytest.importorskip("plotly", reason="the comparator's figures need the scientific stack")
+
 from core.config import ScoringPolicy, get_config
 from modules.comparison_module import ModelComparator
 

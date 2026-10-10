@@ -21,8 +21,11 @@ from __future__ import annotations
 
 import math
 
-import numpy as np
 import pytest
+
+pytest.importorskip("numpy", reason="metric tests need the scientific stack")
+
+import numpy as np  # noqa: E402 - after importorskip by design
 
 from utils import metrics
 from utils.metrics import get_prediction_entropy, identify_high_confidence_errors

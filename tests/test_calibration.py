@@ -21,9 +21,14 @@ The binding decisions under test:
 
 from __future__ import annotations
 
-import numpy as np
-import pandas as pd
 import pytest
+
+pytest.importorskip("numpy", reason="calibration tests need the scientific stack")
+pytest.importorskip("pandas", reason="calibration tests need the scientific stack")
+pytest.importorskip("plotly", reason="the report figures need the scientific stack")
+
+import numpy as np  # noqa: E402 - after importorskip by design
+import pandas as pd  # noqa: E402 - after importorskip by design
 
 from core.config import ScoringPolicy, get_config
 from core.errors import ValidationError

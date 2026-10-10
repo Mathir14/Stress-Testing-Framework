@@ -23,6 +23,10 @@ from typing import Any
 
 import pytest
 
+pytest.importorskip("numpy", reason="the report generator pulls the scientific stack")
+pytest.importorskip("pandas", reason="the report generator pulls the scientific stack")
+pytest.importorskip("plotly", reason="the report generator pulls the scientific stack")
+
 from core.errors import ReportExportError
 from modules.reporting_module import ReportGenerator
 
