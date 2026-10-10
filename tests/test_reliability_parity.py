@@ -238,6 +238,41 @@ def test_robustness_component_formula_and_clip():
     assert scorer._robustness_score(10.0) == 0.0
 
 
+def test_components_clamp_at_both_ends():
+    """ADR-021: out-of-range inputs must not push a component past its cap.
+
+    Pre-remediation, a negative ``avg_drop`` produced a fraction above 1 and a
+    component above its 25-point cap (and totals beyond 100); a negative ECE did
+    the same on the calibration side.  Both now clamp to the cap.
+    """
+    scorer = ReliabilityScorer()
+    assert scorer._performance_score(1.5, 1.5) == 25.0
+    assert scorer._performance_score(-0.2, 0.1) == 0.0
+    assert scorer._calibration_score(-0.5) == 25.0
+    assert scorer._robustness_score(-1.0) == 25.0
+
+
+def test_total_is_clamped_to_the_0_100_scale():
+    """The published total cannot exceed 100 even when every input is extreme."""
+    scorer = ReliabilityScorer()
+    extreme = scorer.score_model(
+        "extreme",
+        accuracy=1.5,
+        f1=1.5,
+        ece=-1.0,
+        avg_drop=-1.0,
+        avg_entropy=-1.0,
+        hce_rate=-0.5,
+    )
+    assert extreme["performance"] == 25.0
+    assert extreme["calibration"] == 25.0
+    assert extreme["robustness"] == 25.0
+    assert extreme["confidence"] == 25.0
+    assert extreme["total"] == 100.0
+    empty = scorer.score_model("empty")
+    assert empty["total"] == 0.0
+
+
 def test_confidence_component_splits_the_cap_in_half():
     """12.5 points for entropy, 12.5 for HCE rate."""
     import math
@@ -359,6 +394,56 @@ def test_total_cannot_exceed_the_sum_of_caps(scorer: ReliabilityScorer):
     )
     assert result["total"] == 100.0
     assert result["grade"] == "A+"
+
+
+# ── score_all_models: empty stress evidence is missing, never a zero drop ─────
+
+
+class _StubTrainer:
+    """Minimal trainer-shaped object: score_all_models reads only these two."""
+
+    def __init__(self) -> None:
+        self.trained_models = ["M"]
+        self.metrics = {
+            "M": {
+                "Test": {
+                    "accuracy": 0.9,
+                    "f1": 0.85,
+                }
+            }
+        }
+
+
+def test_score_all_models_empty_stress_evidence_is_missing():
+    """run-015 C1b: empty stress results must not score a full robustness
+    component for a zero drop — the component is simply missing."""
+    result = ReliabilityScorer().score_all_models(
+        _StubTrainer(), stress_results={"M": {}}
+    )["M"]
+    assert "Robustness" in result["missing_components"]
+    assert result["robustness"] == ReliabilityScorer().policy.missing_component_points
+
+
+def test_score_all_models_non_numeric_stress_evidence_is_missing():
+    result = ReliabilityScorer().score_all_models(
+        _StubTrainer(),
+        stress_results={"M": {"noise": {"performance_drop_pct": 3.0}}},
+    )["M"]
+    assert "Robustness" in result["missing_components"]
+
+
+def test_score_all_models_averages_numeric_drops():
+    """Numeric drops are averaged: (1 - 0.3/0.5) * 25 = 10.0."""
+    result = ReliabilityScorer().score_all_models(
+        _StubTrainer(),
+        stress_results={
+            "M": {
+                "noise": {"performance_drop": 0.2},
+                "shift": {"performance_drop": 0.4},
+            }
+        },
+    )["M"]
+    assert result["robustness"] == 10.0
 
 
 def test_details_echo_the_inputs(scorer: ReliabilityScorer):

@@ -7,17 +7,29 @@ Score breakdown (each component 0–25 pts, total 0–100):
   • Calibration     – Expected Calibration Error (lower ECE → higher score)
   • Robustness      – mean performance retention across stress tests
   • Confidence Qual – entropy tightness + high-confidence error rate
+
+The component *arithmetic* is delegated to :mod:`core.scoring` (ADR-021), the
+single owner of the scoring transforms; this class only applies the configured
+caps and grades.  Every component fraction is clamped to ``[0, 1]`` at both
+ends, the published total is clamped to ``[0, 100]``, and empty stress evidence
+is ``None`` (missing), never a zero drop.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
 from core.config import ReliabilityWeights, ScoringPolicy, get_config
+from core.scoring import (
+    calibration_fraction,
+    confidence_fraction,
+    mean_performance_drop,
+    performance_fraction,
+    robustness_fraction,
+)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Grade helpers
@@ -87,27 +99,32 @@ class ReliabilityScorer:
     # ── Component calculators ────────────────────────────────────────────────
 
     def _performance_score(self, accuracy: float, f1: float) -> float:
-        """0–25 pts.  Average of accuracy and F1, scaled to 25."""
-        return round(((accuracy + f1) / 2) * self.MAX_PERF, 3)
+        """0–25 pts.  Average of accuracy and F1, scaled to 25.
+
+        The fraction transform (ADR-021) clamps both ends, so out-of-range
+        values can never push the component past its cap.
+        """
+        return round(performance_fraction(accuracy, f1) * self.MAX_PERF, 3)
 
     def _calibration_score(self, ece: float) -> float:
         """
         0–25 pts.
         ECE = 0   → 25 pts  (perfect)
         ECE = ece_cap → 0  pts  (terrible)
-        Linear interpolation, clipped.
+        Linear interpolation, clipped at both ends.
         """
-        pts = max(0.0, (1.0 - ece / self.weights.ece_cap)) * self.MAX_CAL
-        return round(pts, 3)
+        fraction = calibration_fraction(ece, ece_cap=self.weights.ece_cap)
+        return round(fraction * self.MAX_CAL, 3)
 
     def _robustness_score(self, avg_drop: float) -> float:
         """
         0–25 pts.
-        avg_drop is the mean performance_drop fraction (0–1).
-        0 drop → 25 pts,  ≥ drop_cap → 0 pts.
+        avg_drop is the mean performance_drop fraction.
+        0 drop → 25 pts,  ≥ drop_cap → 0 pts; a *negative* drop is clamped to
+        a perfect score rather than inflating the component past its cap.
         """
-        pts = max(0.0, (1.0 - avg_drop / self.weights.drop_cap)) * self.MAX_ROB
-        return round(pts, 3)
+        fraction = robustness_fraction(avg_drop, drop_cap=self.weights.drop_cap)
+        return round(fraction * self.MAX_ROB, 3)
 
     def _confidence_score(
         self,
@@ -120,15 +137,14 @@ class ReliabilityScorer:
         Penalises high normalised entropy and high-confidence error rate (hce_rate).
           entropy component  : (1 - avg_entropy/max_entropy) * 12.5
           hce component      : (1 - hce_rate) * 12.5
-        """
-        if max_entropy <= 0:
-            norm_entropy = 0.0
-        else:
-            norm_entropy = min(avg_entropy / max_entropy, 1.0)
 
-        entropy_pts = (1.0 - norm_entropy) * (self.MAX_CONF / 2)
-        hce_pts = max(0.0, 1.0 - hce_rate) * (self.MAX_CONF / 2)
-        return round(entropy_pts + hce_pts, 3)
+        The unified transform owns the arithmetic (ADR-021); ``max_entropy`` is
+        ``log2(max(n_classes, 2))``, from which the class count is recovered so
+        the shared ``confidence_fraction`` can enforce the same normalisation.
+        """
+        n_classes = max(2, round(2.0 ** float(max_entropy)))
+        fraction = confidence_fraction(avg_entropy, hce_rate, n_classes=n_classes)
+        return round(fraction * self.MAX_CONF, 3)
 
     # ── Core scoring pipeline ────────────────────────────────────────────────
 
@@ -199,7 +215,9 @@ class ReliabilityScorer:
             conf_pts = missing_points
             missing.append("Confidence")
 
-        total = round(perf_pts + cal_pts + rob_pts + conf_pts, 2)
+        total = round(
+            min(max(perf_pts + cal_pts + rob_pts + conf_pts, 0.0), 100.0), 2
+        )
         grade, colour = self._grade(total)
         rated = len(available) >= self.policy.min_measured_components
 
@@ -257,15 +275,11 @@ class ReliabilityScorer:
             accuracy = entry["accuracy"] if entry else None
             f1 = entry["f1"] if entry else None
 
-            # Robustness: mean drop across stress types
+            # Robustness: mean drop across stress types.  Empty or non-numeric
+            # evidence is missing (None), never a zero drop (ADR-021).
             avg_drop: float | None = None
             if stress_results and model_name in stress_results:
-                drops = [
-                    r.get("performance_drop", 0)
-                    for r in stress_results[model_name].values()
-                    if isinstance(r, dict)
-                ]
-                avg_drop = float(np.mean(drops)) if drops else 0.0
+                avg_drop = mean_performance_drop(stress_results[model_name])
 
             ece = (calibration_ece or {}).get(model_name)
             avg_entropy = (entropy_data or {}).get(model_name)
