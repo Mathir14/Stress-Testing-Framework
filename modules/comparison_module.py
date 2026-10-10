@@ -283,12 +283,16 @@ class ModelComparator:
         missing: list[str] = []
 
         if robustness_dict and model in robustness_dict:
-            # A non-finite or out-of-range robustness reading scores zero rather
-            # than escaping into the published composite (run-015 review): the
-            # in-app source is finite, but ``rate_models`` is public and a
-            # ``NaN`` here would otherwise produce a ``NaN`` composite and grade.
+            # Every non-finite reading scores zero rather than escaping into the
+            # published composite (run-015 review): the in-app source is finite,
+            # but ``rate_models`` is public and a ``NaN`` here would otherwise
+            # produce a ``NaN`` composite and grade.  ``+inf`` is the subtler
+            # case — ``min(max(inf, 0.0), 100.0)`` is ``100.0``, so clamping
+            # alone would award *full credit* for a measurement that does not
+            # exist; routing all non-finite values through the no-credit floor
+            # keeps the two infinities and ``NaN`` consistent (run-015 M+).
             robustness = float(robustness_dict[model])
-            if math.isnan(robustness):
+            if not math.isfinite(robustness):
                 robustness = 0.0
             components["robustness"] = min(max(robustness, 0.0), 100.0)
             available.append("robustness")

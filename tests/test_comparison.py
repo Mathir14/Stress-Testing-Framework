@@ -333,6 +333,27 @@ def test_nan_evidence_never_produces_a_non_finite_composite(comparator: ModelCom
         assert value is None or math.isfinite(value)
 
 
+def test_infinite_robustness_is_floored_not_a_full_credit_component(
+    comparator: ModelComparator,
+):
+    """``+inf`` robustness must floor to zero, not clamp to a perfect 100.
+
+    ``min(max(+inf, 0.0), 100.0)`` is ``100.0`` — full credit for a measurement
+    that does not exist — while the neighbouring ``NaN`` branch scored zero, so
+    the two non-finite values disagreed.  Both infinities now take the same
+    no-credit floor as ``NaN`` (run-015 review m1).
+    """
+    import math
+
+    positive = comparator.rate_models(_metrics(), {"M": float("inf")})["M"]
+    assert positive["components"]["robustness"] == 0.0
+    assert math.isfinite(positive["composite"])
+
+    negative = comparator.rate_models(_metrics(), {"M": float("-inf")})["M"]
+    assert negative["components"]["robustness"] == 0.0
+    assert math.isfinite(negative["composite"])
+
+
 def test_performance_component_uses_the_shared_transform(comparator: ModelComparator):
     """The comparator must not restate ``(accuracy + f1) / 2`` inline.
 

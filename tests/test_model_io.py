@@ -770,6 +770,36 @@ def test_manifest_is_re_readable_from_disk(store: ModelArtifactStore):
     }
 
 
+def test_library_versions_distinguishes_absence_from_a_lookup_failure(
+    monkeypatch: pytest.MonkeyPatch, store: ModelArtifactStore, caplog
+):
+    """``"<not installed>"`` means *absent*, never *could not be determined*.
+
+    ``importlib.metadata.version`` raises ``PackageNotFoundError`` for a
+    distribution that is genuinely not installed, but it can fail for other
+    reasons too.  Reporting both as ``"<not installed>"`` conflates an absent
+    dependency with a broken metadata lookup and falsifies the manifest's
+    provenance (ADR-011.3, run-015 review m2).
+    """
+    import importlib.metadata as importlib_metadata
+
+    def fake_version(distribution: str) -> str:
+        if distribution == "scikit-learn":
+            raise importlib_metadata.PackageNotFoundError(distribution)
+        raise RuntimeError("metadata backend exploded")
+
+    monkeypatch.setattr(importlib_metadata, "version", fake_version)
+    with caplog.at_level("WARNING", logger="core.model_io"):
+        store.save(_FakeEstimator(1.0), "model.pkl", model_name="Fake")
+
+    versions = json.loads(store.manifest_path.read_text(encoding="utf-8"))[
+        "artifacts"
+    ]["model.pkl"]["library_versions"]
+    assert versions["scikit-learn"] == "<not installed>"
+    assert versions["xgboost"] != "<not installed>"
+    assert "xgboost" in caplog.text
+
+
 def test_leftover_tmp_file_is_ignored(store: ModelArtifactStore):
     """A crash mid-write leaves a ``.tmp``; the real manifest must still win.
 

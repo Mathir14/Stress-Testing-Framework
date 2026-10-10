@@ -413,15 +413,33 @@ class ModelArtifactStore:
         suite) free of the scientific stack (ADR-011.3).
 
         Returns:
-            dict: Always carries both keys; an absent distribution is recorded
-            as ``"<not installed>"`` so the manifest schema stays stable.
+            dict: Always carries both keys so the manifest schema stays stable.
+            A genuinely absent distribution is recorded as ``"<not installed>"``
+            (ADR-011.3); a metadata *lookup* failure is recorded distinctly,
+            because reporting it as absent would falsify provenance.
         """
         versions: dict[str, str] = {}
         for distribution in ("scikit-learn", "xgboost"):
             try:
                 versions[distribution] = importlib_metadata.version(distribution)
-            except Exception:  # noqa: BLE001 - metadata lookup must never fail the save
+            except importlib_metadata.PackageNotFoundError:
+                # The one condition that means "not installed" (ADR-011.3).
                 versions[distribution] = "<not installed>"
+            except Exception as exc:  # noqa: BLE001 - metadata lookup must never fail the save
+                # A lookup that failed for any other reason is *not* an absent
+                # distribution.  Recording ``"<not installed>"`` here would
+                # conflate the two and falsify the manifest's provenance
+                # (run-015 review m2).  Keep the key present so the schema is
+                # stable, log the cause, and use an honest distinct marker.
+                logger.warning(
+                    "Could not resolve the installed version of %s (%s: %s); "
+                    "recording an unknown-version marker rather than reporting "
+                    "it as not installed.",
+                    distribution,
+                    type(exc).__name__,
+                    exc,
+                )
+                versions[distribution] = "<unknown: metadata lookup failed>"
         return versions
 
     # ── Estimator gate ────────────────────────────────────────────────────────
