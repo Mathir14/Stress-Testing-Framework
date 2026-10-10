@@ -96,6 +96,54 @@
       "robustness": 0.0,
       "total": 0.0
     },
+    "drop_over_cap": {
+      "available_components": [
+        "Performance",
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "calibration": 22.5,
+      "colour": "#FF9800",
+      "confidence": 21.25,
+      "grade": "C",
+      "missing_components": [],
+      "performance": 20.0,
+      "robustness": 0.0,
+      "total": 63.75
+    },
+    "drop_over_cap__nc3": {
+      "available_components": [
+        "Performance",
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "calibration": 22.5,
+      "colour": "#FF9800",
+      "confidence": 22.634,
+      "grade": "C",
+      "missing_components": [],
+      "performance": 20.0,
+      "robustness": 0.0,
+      "total": 65.13
+    },
+    "drop_over_cap__nc5": {
+      "available_components": [
+        "Performance",
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "calibration": 22.5,
+      "colour": "#FF9800",
+      "confidence": 23.385,
+      "grade": "C",
+      "missing_components": [],
+      "performance": 20.0,
+      "robustness": 0.0,
+      "total": 65.89
+    },
     "missing_all": {
       "available_components": [],
       "calibration": 0.0,
@@ -143,6 +191,153 @@
       "performance": 0.0,
       "robustness": 0.0,
       "total": 0.0
+    },
+    "missing_drop": {
+      "available_components": [
+        "Performance",
+        "Calibration",
+        "Confidence"
+      ],
+      "calibration": 22.5,
+      "colour": "#FF9800",
+      "confidence": 21.25,
+      "grade": "C",
+      "missing_components": [
+        "Robustness"
+      ],
+      "performance": 20.0,
+      "robustness": 0.0,
+      "total": 63.75
+    },
+    "missing_drop__nc3": {
+      "available_components": [
+        "Performance",
+        "Calibration",
+        "Confidence"
+      ],
+      "calibration": 22.5,
+      "colour": "#FF9800",
+      "confidence": 22.634,
+      "grade": "C",
+      "missing_components": [
+        "Robustness"
+      ],
+      "performance": 20.0,
+      "robustness": 0.0,
+      "total": 65.13
+    },
+    "missing_drop__nc5": {
+      "available_components": [
+        "Performance",
+        "Calibration",
+        "Confidence"
+      ],
+      "calibration": 22.5,
+      "colour": "#FF9800",
+      "confidence": 23.385,
+      "grade": "C",
+      "missing_components": [
+        "Robustness"
+      ],
+      "performance": 20.0,
+      "robustness": 0.0,
+      "total": 65.89
+    },
+    "nan_drop": {
+      "available_components": [
+        "Performance",
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "calibration": 22.5,
+      "colour": "#FF9800",
+      "confidence": 21.25,
+      "grade": "C",
+      "missing_components": [],
+      "performance": 20.0,
+      "robustness": 0.0,
+      "total": 63.75
+    },
+    "nan_drop__nc3": {
+      "available_components": [
+        "Performance",
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "calibration": 22.5,
+      "colour": "#FF9800",
+      "confidence": 22.634,
+      "grade": "C",
+      "missing_components": [],
+      "performance": 20.0,
+      "robustness": 0.0,
+      "total": 65.13
+    },
+    "nan_drop__nc5": {
+      "available_components": [
+        "Performance",
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "calibration": 22.5,
+      "colour": "#FF9800",
+      "confidence": 23.385,
+      "grade": "C",
+      "missing_components": [],
+      "performance": 20.0,
+      "robustness": 0.0,
+      "total": 65.89
+    },
+    "negative_drop": {
+      "available_components": [
+        "Performance",
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "calibration": 22.5,
+      "colour": "#8BC34A",
+      "confidence": 21.25,
+      "grade": "A",
+      "missing_components": [],
+      "performance": 20.0,
+      "robustness": 25.0,
+      "total": 88.75
+    },
+    "negative_drop__nc3": {
+      "available_components": [
+        "Performance",
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "calibration": 22.5,
+      "colour": "#4CAF50",
+      "confidence": 22.634,
+      "grade": "A+",
+      "missing_components": [],
+      "performance": 20.0,
+      "robustness": 25.0,
+      "total": 90.13
+    },
+    "negative_drop__nc5": {
+      "available_components": [
+        "Performance",
+        "Calibration",
+        "Robustness",
+        "Confidence"
+      ],
+      "calibration": 22.5,
+      "colour": "#4CAF50",
+      "confidence": 23.385,
+      "grade": "A+",
+      "missing_components": [],
+      "performance": 20.0,
+      "robustness": 25.0,
+      "total": 90.89
     },
     "partial": {
       "available_components": [],
