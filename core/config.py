@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -91,6 +91,46 @@ class StressBounds:
     corruption_rate: tuple[float, float] = (0.0, 1.0)
     scale_factor: tuple[float, float] = (1.0, 10.0)
     shift_amount: tuple[float, float] = (0.0, 10.0)
+
+    def __post_init__(self) -> None:
+        """Validate ordering, sign and fullness of every parameter range.
+
+        ADR-023: a frozen value object that can be built invalid is a "tunable
+        with a broken reader" — the listener (``core.validation``) trusts the
+        shape here, so a reversed, negative or malformed pair would silently
+        narrow or widen the accepted surface differently from the UI sliders.
+        """
+        from core.errors import ConfigurationError
+
+        for field in fields(self):
+            value = getattr(self, field.name)
+            if not isinstance(value, tuple) or len(value) != 2:
+                raise ConfigurationError(
+                    f"StressBounds.{field.name} must be a (low, high) pair, "
+                    f"got {value!r}.",
+                    context={"field": field.name, "expected": "tuple of 2 numbers"},
+                )
+            low, high = value
+            for bound, label in ((low, "low"), (high, "high")):
+                if isinstance(bound, bool) or not isinstance(bound, (int, float)):
+                    raise ConfigurationError(
+                        f"StressBounds.{field.name} {label} bound must be a "
+                        f"number, got {bound!r}.",
+                        context={"field": field.name, "bound": label, "value": bound},
+                    )
+            low, high = float(low), float(high)
+            if low < 0.0:
+                raise ConfigurationError(
+                    f"StressBounds.{field.name} lower bound must be non-negative, "
+                    f"got {low}.",
+                    context={"field": field.name, "value": low},
+                )
+            if high < low:
+                raise ConfigurationError(
+                    f"StressBounds.{field.name} must satisfy low <= high, got "
+                    f"({low}, {high}).",
+                    context={"field": field.name, "low": low, "high": high},
+                )
 
 
 @dataclass(frozen=True)
@@ -176,6 +216,100 @@ class ReliabilityWeights:
             if threshold >= bound:
                 return colour
         return self.grade_colours[-1][1]
+
+    def __post_init__(self) -> None:
+        """Validate caps, grade ordering/sign/emptiness (ADR-023).
+
+        The four caps are denominators in the reliability arithmetic, so a
+        ``<= 0`` cap would silently divide by nothing; the grade tables drive
+        ranked output, so a reversed or empty table would silently repoint every
+        published grade.  Both failures are rejected at construction, on every
+        path that can build a weights object.
+        """
+        from core.errors import ConfigurationError
+
+        for cap_field in ("max_perf", "max_cal", "max_rob", "max_conf"):
+            value = getattr(self, cap_field)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ConfigurationError(
+                    f"ReliabilityWeights.{cap_field} must be a number, got {value!r}.",
+                    context={"field": cap_field, "value": value},
+                )
+            if float(value) <= 0.0:
+                raise ConfigurationError(
+                    f"ReliabilityWeights.{cap_field} must be positive, got {value!r}.",
+                    context={"field": cap_field, "value": value},
+                )
+        for cap_field, cap_name in (("ece_cap", "ECE"), ("drop_cap", "relative-drop")):
+            value = getattr(self, cap_field)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ConfigurationError(
+                    f"ReliabilityWeights.{cap_field} must be a number, got {value!r}.",
+                    context={"field": cap_field, "value": value},
+                )
+            if float(value) <= 0.0:
+                raise ConfigurationError(
+                    f"ReliabilityWeights.{cap_field} (the {cap_name} cap) must be "
+                    f"positive, got {value!r}.",
+                    context={"field": cap_field, "value": value},
+                )
+        self._validate_grade_table("grade_cutoffs")
+        self._validate_grade_table("grade_colours", hex_colour=True)
+
+    def _validate_grade_table(self, attr: str, *, hex_colour: bool = False) -> None:
+        from core.errors import ConfigurationError
+
+        rows = getattr(self, attr)
+        if not isinstance(rows, tuple) or len(rows) == 0:
+            raise ConfigurationError(
+                f"ReliabilityWeights.{attr} must be a non-empty tuple of "
+                "(threshold, value) pairs.",
+                context={"field": attr, "expected": "non-empty tuple"},
+            )
+        previous = float("inf")
+        for row in rows:
+            if not isinstance(row, tuple) or len(row) != 2:
+                raise ConfigurationError(
+                    f"ReliabilityWeights.{attr} entries must be (threshold, value) "
+                    f"pairs, got {row!r}.",
+                    context={"field": attr, "expected": "tuple of 2 items"},
+                )
+            threshold, label = row
+            if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
+                raise ConfigurationError(
+                    f"ReliabilityWeights.{attr} thresholds must be numbers, "
+                    f"got {threshold!r}.",
+                    context={"field": attr, "value": threshold},
+                )
+            threshold = float(threshold)
+            if not (0.0 <= threshold <= 100.0):
+                raise ConfigurationError(
+                    f"ReliabilityWeights.{attr} thresholds must fall in [0, 100], "
+                    f"got {threshold}.",
+                    context={"field": attr, "value": threshold},
+                )
+            if threshold >= previous:
+                raise ConfigurationError(
+                    f"ReliabilityWeights.{attr} thresholds must be strictly "
+                    f"descending (highest first), got {threshold} after {previous}.",
+                    context={"field": attr, "value": threshold},
+                )
+            previous = threshold
+            if not isinstance(label, str) or not label:
+                raise ConfigurationError(
+                    f"ReliabilityWeights.{attr} value must be a non-empty string, "
+                    f"got {label!r}.",
+                    context={"field": attr, "value": label},
+                )
+            if hex_colour and (
+                len(label) != 7 or not label.startswith("#")
+                or not all(c in "0123456789abcdefABCDEF" for c in label[1:])
+            ):
+                raise ConfigurationError(
+                    f"ReliabilityWeights.{attr} colours must be #RRGGBB hex "
+                    f"strings, got {label!r}.",
+                    context={"field": attr, "value": label},
+                )
 
 
 @dataclass(frozen=True)
@@ -270,6 +404,141 @@ class ScoringPolicy:
                 return float(weight)
         return 0.0
 
+    def __post_init__(self) -> None:
+        """Validate weights sum, band ordering and sign (ADR-023).
+
+        A broken composite (weights that do not sum to ``1.0``, an empty
+        component list, a non-positive gate) would silently repoint every
+        published score, so it is rejected at construction on every path.
+        """
+        from core.errors import ConfigurationError
+
+        weights = self.composite_weights
+        if not isinstance(weights, tuple) or len(weights) == 0:
+            raise ConfigurationError(
+                "ScoringPolicy.composite_weights must be a non-empty tuple of "
+                "(component, weight) pairs.",
+                context={"field": "composite_weights", "expected": "non-empty tuple"},
+            )
+        seen: set[str] = set()
+        total = 0.0
+        for row in weights:
+            if not isinstance(row, tuple) or len(row) != 2:
+                raise ConfigurationError(
+                    f"ScoringPolicy.composite_weights entries must be (component, "
+                    f"weight) pairs, got {row!r}.",
+                    context={"field": "composite_weights", "expected": "tuple of 2 items"},
+                )
+            component, weight = row
+            if not isinstance(component, str) or not component:
+                raise ConfigurationError(
+                    f"ScoringPolicy.composite_weights components must be non-empty "
+                    f"strings, got {component!r}.",
+                    context={"field": "composite_weights", "value": component},
+                )
+            if component in seen:
+                raise ConfigurationError(
+                    f"ScoringPolicy.composite_weights lists {component!r} twice.",
+                    context={"field": "composite_weights", "value": component},
+                )
+            seen.add(component)
+            if isinstance(weight, bool) or not isinstance(weight, (int, float)):
+                raise ConfigurationError(
+                    f"ScoringPolicy.composite_weights weight for {component!r} must "
+                    f"be a number, got {weight!r}.",
+                    context={"field": "composite_weights", "value": weight},
+                )
+            weight = float(weight)
+            if not (0.0 <= weight <= 1.0):
+                raise ConfigurationError(
+                    f"ScoringPolicy.composite_weights weights must fall in [0, 1], "
+                    f"got {weight} for {component!r}.",
+                    context={"field": "composite_weights", "value": weight},
+                )
+            total += weight
+        if abs(total - 1.0) > 1e-9:
+            raise ConfigurationError(
+                f"ScoringPolicy.composite_weights must sum to 1.0, got {total:.10f}.",
+                context={"field": "composite_weights", "value": total},
+            )
+
+        gate = self.min_measured_components
+        if isinstance(gate, bool) or not isinstance(gate, int) or gate < 1:
+            raise ConfigurationError(
+                "ScoringPolicy.min_measured_components must be an int >= 1, "
+                f"got {gate!r}.",
+                context={"field": "min_measured_components", "value": gate},
+            )
+
+        missing = self.missing_component_points
+        if isinstance(missing, bool) or not isinstance(missing, (int, float)):
+            raise ConfigurationError(
+                "ScoringPolicy.missing_component_points must be a number, "
+                f"got {missing!r}.",
+                context={"field": "missing_component_points", "value": missing},
+            )
+        if float(missing) < 0.0:
+            raise ConfigurationError(
+                "ScoringPolicy.missing_component_points must be non-negative, "
+                f"got {missing!r}.",
+                context={"field": "missing_component_points", "value": missing},
+            )
+
+        self._validate_ascending_bands("ece_quality", positive_only=True)
+        self._validate_ascending_bands("severity_bands", positive_only=True)
+        for label_field in ("quality_fallthrough", "severity_fallthrough"):
+            label = getattr(self, label_field)
+            if not isinstance(label, str) or not label:
+                raise ConfigurationError(
+                    f"ScoringPolicy.{label_field} must be a non-empty string, "
+                    f"got {label!r}.",
+                    context={"field": label_field, "value": label},
+                )
+
+    def _validate_ascending_bands(self, attr: str, *, positive_only: bool) -> None:
+        from core.errors import ConfigurationError
+
+        bands = getattr(self, attr)
+        if not isinstance(bands, tuple) or len(bands) == 0:
+            raise ConfigurationError(
+                f"ScoringPolicy.{attr} must be a non-empty tuple of "
+                "(strict_upper_bound, label) pairs.",
+                context={"field": attr, "expected": "non-empty tuple"},
+            )
+        previous = -1.0
+        for row in bands:
+            if not isinstance(row, tuple) or len(row) != 2:
+                raise ConfigurationError(
+                    f"ScoringPolicy.{attr} entries must be (bound, label) pairs, "
+                    f"got {row!r}.",
+                    context={"field": attr, "expected": "tuple of 2 items"},
+                )
+            bound, label = row
+            if isinstance(bound, bool) or not isinstance(bound, (int, float)):
+                raise ConfigurationError(
+                    f"ScoringPolicy.{attr} bounds must be numbers, got {bound!r}.",
+                    context={"field": attr, "value": bound},
+                )
+            bound = float(bound)
+            if positive_only and bound <= -1e-9:
+                raise ConfigurationError(
+                    f"ScoringPolicy.{attr} bounds must be positive, got {bound}.",
+                    context={"field": attr, "value": bound},
+                )
+            if bound <= previous:
+                raise ConfigurationError(
+                    f"ScoringPolicy.{attr} bounds must be strictly ascending, got "
+                    f"{bound} after {previous}.",
+                    context={"field": attr, "value": bound},
+                )
+            previous = bound
+            if not isinstance(label, str) or not label:
+                raise ConfigurationError(
+                    f"ScoringPolicy.{attr} labels must be non-empty strings, "
+                    f"got {label!r}.",
+                    context={"field": attr, "value": label},
+                )
+
 
 @dataclass(frozen=True)
 class ArtifactPolicy:
@@ -320,6 +589,33 @@ class AppConfig:
     scoring: ScoringPolicy = ScoringPolicy()
     log_level: str = "INFO"
     random_seed: int | None = None
+
+    def __post_init__(self) -> None:
+        """Reject an unusable ``random_seed`` or ``log_level`` (ADR-023).
+
+        ``np.random.default_rng`` crashes with a negative seed, and an unknown
+        ``log_level`` would be silently ignored by ``logging.basicConfig``; both
+        are failures this repository's ADRs name as cardinal, so neither is
+        accepted on any construction path.  ``dataclasses.replace`` and the
+        environment path both funnel through this check.
+        """
+        from core.errors import ConfigurationError
+
+        if self.random_seed is not None and self.random_seed < 0:
+            raise ConfigurationError(
+                f"random_seed must be None or a non-negative int, got "
+                f"{self.random_seed!r}.",
+                context={"field": "random_seed", "value": self.random_seed},
+            )
+        if (
+            not isinstance(self.log_level, str)
+            or not isinstance(logging.getLevelName(self.log_level), int)
+        ):
+            raise ConfigurationError(
+                f"log_level must be a recognised logging level name, got "
+                f"{self.log_level!r}.",
+                context={"field": "log_level", "value": self.log_level},
+            )
 
 
 _singleton: AppConfig | None = None

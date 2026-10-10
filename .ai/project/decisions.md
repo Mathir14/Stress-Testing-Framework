@@ -914,3 +914,206 @@ Numeric defaults referenced here are frozen by ADR-005 parity tests.
   result that reproduces identically until the cache is evicted.
 - **Consequences:** No caching layer added; per-render recomputation remains the
   documented behaviour. No public signature changes.
+
+---
+
+## ADR-021 — One monotone scoring transform in `core/scoring.py`; missing evidence is `None`; totals clamp (extends ADR-018)
+
+- **Status:** Accepted
+- **Context:** ADR-018 unified the scoring *policy* but left the *arithmetic*
+  duplicated and self-contradictory. Run-015 Critic C1/M2/M3 confirmed:
+  `ReliabilityScorer` computed an unbounded total (exceeding 100 when a
+  component exceeded its cap) and a negative stress drop produced a negative
+  robustness component that could still yield an A+; empty stress evidence
+  defaulted `avg_drop` to `0.0` and scored a full 25/25 robustness; the
+  comparison calibration used a hardcoded `1.0 - ece` cap that disagreed with
+  the configured `ece_cap=0.5`.
+- **Decision:**
+  1. **`core/scoring.py` is the single owner of the component transforms.**
+     New module, stdlib-only, rung-2 sibling under the §2.3 ladder importing
+     nothing project-local beyond `core.config`. It exposes
+     `performance_fraction`, `calibration_fraction`, `robustness_fraction`,
+     `confidence_fraction` (each clamped to `[0.0, 1.0]` at **both** ends),
+     `mean_performance_drop` (returns `None` when there is no numeric
+     evidence) and `combine_fractions` (weighted total; `None` means zero
+     weight, no redistribution).
+  2. **`ReliabilityScorer` delegates** its component arithmetic to
+     `core.scoring` and clamps the published total to `[0, 100]`.
+  3. **`ModelComparator` drives calibration from `ReliabilityWeights.ece_cap`**
+     via `core.scoring.calibration_fraction`; the hardcoded `1.0` cap is
+     deleted.
+  4. **Missing evidence is `None`, never a zero.** Empty or non-numeric stress
+     evidence yields `mean_performance_drop=None`, and a missing component
+     scores the ADR-018 missing-component points — never a full-capacity
+     zero-drop.
+  5. Views 07/08/09 consume `modules/evidence_module.collect_evidence`
+     (ADR-021 companion, derived from the same finding set M2/M3) and their
+     duplicated robustness/ECE formulas are deleted.
+- **Rationale:** One owner per transform is the only way the property
+  "adding evidence can never lower a score" survives across modules; clamping
+  makes the published totals true 0–100 scores; `None` distinguishes "missing"
+  from "zero damage" in the only place that distinction is observable.
+- **Consequences:** Reliability component scores can change for negative drops,
+  over-cap inputs and empty evidence — the published-numbers change is intended
+  and enumerated in architecture.md §9 (clamped; `None` for missing).
+  `ReliabilityScorer`/`ModelComparator` public signatures are unchanged
+  (`_confidence_score(max_entropy)` keeps its signature). The parity fixture is
+  regenerated with the deltas enumerated.
+
+---
+
+## ADR-022 — Logging is configured on the root logger
+
+- **Status:** Accepted
+- **Context:** `core/logging_config.py` attached its handler to a private
+  `"stf"` logger that no module uses, so every `getLogger(__name__)` record
+  fell through to the default last-resort handler and all module INFO/WARNING
+  output was dropped (run-015 M4).
+- **Decision:**
+  1. `configure_logging(config=None) -> logging.Logger` installs the one
+     `_stf_handler` on the **root** logger, so `core`, `modules`, `views` and
+     `app` records reach it.
+  2. The call is idempotent: repeat calls never install a second handler.
+  3. Noisy third-party loggers (`streamlit`, `urllib3`, `matplotlib`, `PIL`)
+     are quieted to `WARNING` at configure time.
+  4. `AppConfig.log_level` is the sole level gate, already validated by
+     ADR-023.
+- **Rationale:** The handler must sit where the records actually flow; a named
+  logger no one uses is a gate that runs nothing (ADR-026's class of defect).
+- **Consequences:** Module INFO/WARNING/ERROR records are observable again. No
+  public logging API changes; `app.py` calls `configure_logging` once.
+
+---
+
+## ADR-023 — Configuration is self-validating: `random_seed`, `log_level`, bounds and caps
+
+- **Status:** Accepted
+- **Context:** `get_config({"random_seed": -1})` and `STF_RANDOM_SEED=-1` were
+  accepted, then `np.random.default_rng(-1)` crashed every run
+  (`views/base.py:68`); an unrecognised `STF_LOG_LEVEL` string was silently
+  carried as a level name; the frozen value dataclasses could be built invalid —
+  the "tunable with a broken reader" shape (run-015 M5).
+- **Decision:**
+  1. **`AppConfig.__post_init__`** raises `ConfigurationError` when
+     `random_seed` is negative or `log_level` is not a recognised `logging`
+     level name.
+  2. **`StressBounds.__post_init__`** validates ordering, sign and fullness of
+     every range pair (`low <= high`, `low >= 0`, exactly two numeric bounds).
+  3. **`ReliabilityWeights.__post_init__`** validates positive caps, a
+     non-empty strictly-descending `grade_cutoffs` table, and a non-empty
+     strictly-descending `grade_colours` table of `#RRGGBB` values.
+  4. **`ScoringPolicy.__post_init__`** validates that composite weights sum to
+     `1.0` (each in `[0,1]`, unique components, non-empty), a positive
+     `min_measured_components`, non-negative `missing_component_points`, and
+     strictly-ascending non-empty `ece_quality`/`severity_bands`.`
+  5. Both the `overrides` path (via `dataclasses.replace`) and the `STF_*`
+     path raise. A *valid but negative* seed and an unrecognised level raise;
+     an *unparseable* seed string still degrades to unseeded with a warning,
+     because coercion failure is distinct from a valid-but-invalid value.
+- **Rationale:** `np.random.default_rng` crashing on every run and a level a
+  logger will never match are both "a gate that passes for the wrong reason"
+  failures; validation at construction is the cheapest place they can be
+  refused, and both construction paths funnel through it.
+- **Consequences:** Invalid configuration is refused on every path with a typed
+  `ConfigurationError`. Tests in `tests/test_config.py` pin the rejections and
+  the exceptions (valid custom bounds/weights/policies still build).
+
+---
+
+## ADR-024 — `model_io.load` binds the digest to the deserialised bytes; symlink checks and typed OSErrors
+
+- **Status:** Accepted
+- **Context:** `load()` hashed the file, skipped its digest check whenever the
+  manifest lacked an entry, then **re-opened the path** for `pickle.load`
+  (run-015 M6) — the deserialised bytes were never proven to be the bytes that
+  were hashed. `root_dir`/`manifest.json` were not symlink-checked; `_read_manifest`
+  let a raw `OSError` escape; architecture.md §4.5 documented the wrong `load`
+  return-type signature.
+- **Decision:**
+  1. **`load()` is read-once and hash-bound:** resolve → length → exists →
+     size → read the file into one buffer → digest that **same buffer** against
+     the manifest → `pickle.loads(buffer)`. The verified bytes are the
+     deserialised bytes.
+  2. `trust=True` still bypasses **only** attestation; the read-once requirement
+     cannot be waived.
+  3. `resolve()` and `_read_manifest()` reject symlinked `root_dir` and
+     `manifest.json` via `lstat` checks.
+  4. `_read_manifest` types every `OSError` (`ArtifactNotFoundError` /
+     `ArtifactIntegrityError`) instead of leaking the builtin.
+  5. Architecture.md §4.5 signature corrected to `-> tuple[Any, ArtifactRecord]`.
+- **Rationale:** A hash-then-reopen boundary leaves a TOCTOU window exactly
+  where the ADR's value proposition ("the bytes you load are the bytes you
+  verified") lives; closing it costs one bounded buffer, capped by
+  `max_size_bytes`.
+- **Consequences:** Peak memory during `load` rises by at most one file-sized
+  buffer (already cap-bounded). No public signature changes.
+
+---
+
+## ADR-025 — Perturbation container-shape validation and the typed-boundary completeness sweep
+
+- **Status:** Accepted
+- **Context:** `apply_perturbation` rejected an empty DataFrame with a typed
+  error but leaked a raw `ValueError` for an empty ndarray (run-015 M7); the
+  batch sweep found raw builtins escaping public boundaries: `data_module.py`
+  `ZeroDivisionError` at `test_size==1.0`, `calibration_module.py` unguarded
+  `len(probs)`, `stress_module.py` raw `KeyError` on a missing `type` key,
+  `model_module.py` `except Exception: pass` (twice), and
+  `reporting_module.export_to_json` leaking a raw `ValueError` on circular
+  references while emitting invalid JSON for non-finite floats.
+- **Decision:**
+  1. **`apply_perturbation` validates zero-row input for both containers**
+     (DataFrame and ndarray) with a typed `ValidationError` before any operator
+     runs.
+  2. **`core/validation` moves the `float()` coercions inside `try`**, so
+     `float(10**400)` raises `ValidationError`, not `OverflowError`.
+  3. **The module-boundary sweep:** `data_module` guards `test_size==1.0`;
+     `calibration_module` guards an empty probability collection;
+     `stress_module` validates the `type` key before dispatch; `model_module`
+     replaces both `except Exception: pass` arms with typed `FrameworkError`
+     handling; `reporting_module.export_to_json` serialises with
+     `allow_nan=False`, emits `null` for non-finite values, and wraps all
+     serialisation failures as `ReportExportError`.
+- **Rationale:** conventions §3 forbids raw builtins crossing module boundaries;
+  `export_to_json` emitting invalid JSON is a silent producer-consumer break.
+- **Consequences:** Empty-input rejection is symmetric across containers; the
+  exported report bytes change for non-finite values (recorded in §9). No
+  public signature changes.
+
+---
+
+## ADR-026 — Gates that cannot fail closed: fixture skip, T0 transitive closure, dynamic widget keys, action-tier outcomes, T1 importorskip
+
+- **Status:** Accepted
+- **Context:** Five gate defects (run-015 M8/M9/M13/M14/M16): the reliability
+  parity test used `pytest.skip`, disabling the suite's sole numeric freeze; the
+  T0 import gate admitted every project package so `core.validation` escaped the
+  transitive closure check; the widget-key contract was blind to interpolated
+  `key=f"..."` sites; the action tier asserted only "no exception" rather than a
+  rendered success or `FrameworkError`; T1 test modules imported the scientific
+  stack at collection time, so a bare full-suite run aborted and T0 never ran.
+- **Decision:**
+  1. **The reliability fixture fails-closed:** `tests/test_reliability_parity.py`
+     no longer skips; `python -m tests.capture_baseline --check` is the verified
+     regeneration path; the baseline is regenerated for the ADR-021
+     clamped/`None` semantics with each delta enumerated in §9.
+  2. **The T0 import gate is tightened** to `core` + `main` only, and
+     `T0_PROJECT_MODULES` gains `core/validation.py` and `core/scoring.py`, with
+     architecture rows/tests for both new modules.
+  3. **The widget-key gate extends** to interpolated `key=f"..."` sites, with an
+     explicit exempt set for dynamic keys (declared, never renamed — conventions
+     §7 stands).
+  4. **The action tier asserts an outcome:** each pressed button must report
+     success or render a `FrameworkError`; the unguarded Compare-Models
+     robustness call in `views/module_05_post_stress.py:380-383` is guarded.
+  5. **T1 modules call `pytest.importorskip` before importing the scientific
+     stack**; `tests/conftest.py` and `tests/test_app_smoke.py` docstrings state
+     exactly what they skip. Stale test cross-references are corrected.
+- **Rationale:** Each item is a gate that passed for the wrong reason — the
+  class ADR-016 item 6 and ADR-022 name as this repository's cardinal test
+  defect.
+- **Consequences:** A bare (`pytest-only`) full-suite run collects T0 and skips
+  T1 with zero collection errors; every listed gate now holds or fails loudly.
+  No production behaviour changes.
+
+---
