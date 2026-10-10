@@ -52,7 +52,12 @@ machine-checkable (`tests/test_architecture.py`).
 - Level policy: domain `warning`/`exception` for recoverable degradations,
   `info` for lifecycle events (model saved, stress test completed), `debug` for
   per-column perturbation diagnostics.
-- Logging is configured once in `app.py` via `core.logging_config.configure_logging`.
+- Logging is configured once in `app.py` via
+  `core.logging_config.configure_logging`. The handler is installed on the
+  **root** logger — so every `logging.getLogger(__name__)` record in `core`,
+  `modules`, `views` and `app` reaches it — the call is idempotent, and noisy
+  third-party loggers (`streamlit`, `urllib3`, `matplotlib`, `PIL`) are quieted
+  to `WARNING`. `AppConfig.log_level` is the sole level gate.
 
 ## 5. Purity & Data
 
@@ -149,7 +154,7 @@ machine-checkable (`tests/test_architecture.py`).
 
 - `tests/` mirrors source layout: `tests/test_<module>.py` for
   `core/<module>.py`.
-- Test names state the invariant: `test_gaussian_noise_does_not_mutate_input`.
+- Test names state the invariant: `test_input_is_never_mutated`.
 - Every bug fixed in this milestone gets a regression test named after the defect.
 - Security tests use `tmp_path`; never touch the real `saved_models/`.
 - Tests MUST be deterministic (seed every RNG; no wall-clock or network).

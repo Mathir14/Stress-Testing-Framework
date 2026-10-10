@@ -94,6 +94,7 @@ core/
   model_io.py                # ModelArtifactStore, ArtifactRecord  (security boundary)
   perturbations.py           # pure perturbation ops + registry    (CRIT-003, MAJ-002)
   reporters.py               # Reporter Protocol, NullReporter, CollectingReporter
+  scoring.py                 # single owner of the scoring component transforms (ADR-021)
   state.py                   # StateKeys, init_state, reset_state, AppContext
   validation.py              # validate_stress_params, ensure_finite, validate_frame
 modules/                     # existing services, public API unchanged
@@ -141,9 +142,9 @@ module may import only from the rungs above it.
    rung 3   core.validation      (depends on 1,2)   <- numeric table + enums live HERE
    rung 2   core.errors          (depends on 1)     imports nothing project-local
    rung 1   core.config          (depends on nothing project-local)
-            (+ core.logging_config, core.model_io, core.reporters, core.state
-              are siblings: they may import rungs 1-2 only, never each other
-              except model_io -> config/errors)
+            (+ core.logging_config, core.model_io, core.reporters, core.scoring,
+              core.state are siblings: they may import rungs 1-2 only, never each
+              other except model_io -> config/errors)
 ```
 
 | Module | MAY import inside `core/` | MUST NOT |
@@ -154,6 +155,7 @@ module may import only from the rungs above it.
 | `core.perturbations` | `config`, `errors`, `validation` | `model_io`, `state`, `reporters` |
 | `core.model_io` | `config`, `errors` | `validation`, `perturbations`, `state`, `reporters` |
 | `core.reporters` | — | any project-local module |
+| `core.scoring` | — | any project-local module |
 | `core.state` | `config`, `errors` | `validation`, `perturbations`, `model_io` |
 | `core.logging_config` | `config` | everything else in `core/` |
 
@@ -595,7 +597,8 @@ unpickler is not a viable boundary here. The mitigation is therefore a
 **provenance and containment boundary**, not "safe deserialization":
 
 1. Filename sanitisation on **both** save and load (`^[A-Za-z0-9][A-Za-z0-9._-]*\.pkl$`,
-   no separators, no absolute paths, no `..`, no NUL, no symlink).
+   no separators, no absolute paths, no `..`, no NUL, no symlink). `root_dir` and
+   `manifest.json` are likewise rejected when they are symlinks (ADR-024).
 2. Path containment: resolved candidate must be `is_relative_to(root_dir)`;
    anything else raises `ArtifactPathError`. This closes the **save-side**
    arbitrary-write hole at `app.py:680-686` (raw `st.text_input` → `os.path.join`),
@@ -604,11 +607,15 @@ unpickler is not a viable boundary here. The mitigation is therefore a
    (`{"format_version": 1, "artifacts": {...}}`) with a SHA-256 digest, size,
    timestamp, model name and library versions. Writes are atomic
    (temp file + `os.replace`).
-4. `load()` re-hashes the file and compares against the manifest **before**
-   `pickle.load`. Mismatch or absent entry raises `ArtifactIntegrityError` /
-   `ArtifactNotFoundError` unless the caller passes `trust=True`, which the UI
-   only sets from an explicit, default-unchecked confirmation widget that states
-   the file will execute arbitrary Python code.
+4. `load()` is **read-once and hash-bound** (ADR-024): it reads the file into a
+   single buffer, verifies that buffer's SHA-256 against the manifest, and then
+   deserialises **the same buffer** — it never re-opens the path after hashing, so
+   the bytes that were verified are the bytes that execute. Mismatch or absent
+   entry raises `ArtifactIntegrityError` / `ArtifactNotFoundError` unless the
+   caller passes `trust=True`, which bypasses **only** attestation (never the
+   containment controls in item 5) and which the UI only sets from an explicit,
+   default-unchecked confirmation widget that states the file will execute
+   arbitrary Python code.
 5. `load()` must apply, in this exact order: (a) `resolve()` → `ArtifactPathError`,
    (b) name-length cap (`policy.max_filename_length`) → `ArtifactPathError`,
    (c) existence → `ArtifactNotFoundError`,
@@ -793,6 +800,13 @@ bodies indented exactly one level. Verified:
   than as a bare number, and the full key-to-view mapping is frozen in
   `tests/fixtures/widget_keys.json` so the check survives without the original
   single-file `app.py`.
+- **Interpolated `key=f"..."` families are frozen too** (ADR-026). A literal scan
+  cannot see them, so the sanctioned templates — `missing_{col}` (Data Management,
+  two sites) and `rel_gauge_overview_{mname}` / `rel_gauge_detail_{model_sel}`
+  (Reliability) — are recorded in `widget_key_templates_by_view` and asserted per
+  view in both directions by `tests/test_architecture.py`. A new f-string key, or
+  a template repointed at a different interpolation, fails the same way a renamed
+  literal does.
 - 13 `hasattr(st.session_state, …)` sites (`app.py:115, 390, 870, 916, 990,
   1068, 1155, 1329, 1608, 1635, 1725, 3503, 3508, 3513`) are the §4.7
   `init_state`/`ensure_service` migration surface.
@@ -1075,6 +1089,60 @@ report paths stay in the estimator's native label space.
     frames are unhashed, so a cache could silently serve stale scores. §8's
     figure-generation bound is reaffirmed.
 
+**Run-015 remediation behaviour changes (ADR-021..026).** These extend the list
+above.
+
+20. **Reliability component and total scores are clamped; missing evidence is
+    `None`** (ADR-021, extends item 14, run-015 C1/M2/M3). `core.scoring` is the
+    single owner of the four component transforms and clamps each fraction to
+    `[0.0, 1.0]` at both ends; `ReliabilityScorer` publishes a total clamped to
+    `[0, 100]`. A negative stress drop or an over-cap input can lower a score but
+    can no longer push it above capacity or yield an A+ from empty evidence;
+    `ModelComparator`'s calibration uses the configured `ReliabilityWeights.ece_cap`
+    (the hardcoded `1.0` cap is deleted). Empty or non-numeric stress evidence
+    yields `mean_performance_drop=None` and the missing-component points, never a
+    full-capacity zero-drop. The parity fixture is regenerated with each delta
+    enumerated here.
+21. **Module-level log records are observable again** (ADR-022, run-015 M4).
+    `configure_logging` installs its handler on the **root** logger rather than a
+    private `"stf"` logger, so `core`/`modules`/`views`/`app` `INFO`/`WARNING`/
+    `ERROR` records that were previously dropped are now emitted (noisy
+    third-party loggers are quieted to `WARNING`). No public API change; this
+    changes observability, not computed values.
+22. **Invalid configuration is refused at construction** (ADR-023, run-015 M5).
+    `AppConfig`, `StressBounds`, `ReliabilityWeights` and `ScoringPolicy` validate
+    in `__post_init__` and raise `ConfigurationError` for a negative `random_seed`,
+    an unrecognised `log_level`, malformed bounds, an empty/descending/non-`#RRGGBB`
+    grade table, or composite weights that do not sum to `1.0`. Both the
+    `overrides` and `STF_*` paths raise; an *unparseable* seed string still
+    degrades to unseeded with a warning.
+23. **`model_io.load` is read-once and hash-bound** (ADR-024, run-015 M6). The
+    file is read into a single buffer, that buffer's SHA-256 is verified against
+    the manifest, and the **same** buffer is deserialised — `pickle.loads` never
+    re-opens the path. `trust=True` still bypasses **only** attestation.
+    `root_dir`/`manifest.json` symlinks are rejected and `_read_manifest` types
+    every `OSError` as `ArtifactNotFoundError`/`ArtifactIntegrityError`. No public
+    signature change.
+24. **Empty-input rejection is symmetric across containers; exported non-finite
+    values change** (ADR-025, run-015 M7). `apply_perturbation` rejects a zero-row
+    ndarray with a typed `ValidationError` (matching the existing DataFrame
+    behaviour), `core.validation`'s `float()` coercions raise `ValidationError`
+    instead of `OverflowError`, and the boundary sweep replaces the remaining raw
+    builtins (`ZeroDivisionError`, `KeyError`, `ValueError`, two
+    `except Exception: pass` arms) with typed errors. **Report export bytes change
+    for non-finite values:** `export_to_json` serialises with `allow_nan=False`,
+    emits `null` for non-finite floats, and wraps serialisation failures as
+    `ReportExportError`.
+25. **No production arithmetic or API change** (ADR-026). The run-015 work is
+    confined to test-infrastructure gates (the reliability fixture fails closed;
+    the T0 closure is tightened to `core` + `main`; interpolated `key=f"..."` sites
+    are covered; the action tier asserts a rendered outcome; T1 modules
+    `pytest.importorskip` the scientific stack). The sole view change is the
+    Compare-Models robustness guard in `views/module_05_post_stress.py`, which
+    turns a previously-uncaught `FrameworkError` into a rendered one — an
+    error-boundary fix of the class item 17 records, with no change to a
+    successful comparison's output.
+
 Measured today, for reference — the defects items 1–11 remove: `int64 + float64`
 frames silently no-op in 5 of 6 operators; `int64` ndarrays silently truncate;
 `scale_perturbation(scale_factor=0.0)` raises `ZeroDivisionError` on roughly half
@@ -1117,6 +1185,11 @@ tests/test_model_io.py tests/test_config.py tests/test_cli.py` on an interpreter
 with only pytest installed. `test_cli.py` earns its place in this tier for the
 same reason the other three are here: it drives the entry point with
 `python -S main.py …`, which is only meaningful if the suite itself needs nothing.
+
+Every T1 module guards each scientific-stack root with `pytest.importorskip`
+**before** the first import that needs it (ADR-026), so a bare (`pytest`-only)
+full-suite run collects T0 and skips T1 with zero collection errors rather than
+aborting on the first missing dependency.
 
 ### 10.2 Minimum required cases
 
