@@ -166,6 +166,17 @@ class CalibrationAnalyzer:
             Dict: ECE, MCE, Brier, confidence/accuracy summaries and bin arrays.
         """
         probs = np.asarray(probabilities, dtype=float)
+        if probs.ndim != 2 or probs.shape[0] == 0 or probs.shape[1] == 0:
+            # An empty or 1-D probability collection has no meaningful ECE, and
+            # the arithmetic below divides by the sample count; reject it with a
+            # typed error rather than returning ``nan`` or leaking AxisError/
+            # ZeroDivisionError (ADR-025).
+            raise ValidationError(
+                "Calibration metrics need a non-empty 2-D "
+                f"(n_samples, n_classes) probability matrix; got shape "
+                f"{list(probs.shape)}.",
+                context={"shape": list(probs.shape)},
+            )
         indices = align_target_indices(y_true, classes)
         if indices.size and int(indices.max()) >= probs.shape[1]:
             raise ValidationError(

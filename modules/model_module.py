@@ -26,7 +26,7 @@ from sklearn.metrics import (
 from xgboost import XGBClassifier
 
 from core.config import get_config
-from core.errors import ModelNotTrainedError, UnknownModelError
+from core.errors import FrameworkError, ModelNotTrainedError, UnknownModelError
 from core.model_io import ArtifactRecord, ModelArtifactStore
 
 logger = logging.getLogger(__name__)
@@ -448,8 +448,13 @@ class ModelTrainer:
         if self.reporter is not None:
             try:
                 self.reporter.success(f"✅ Model saved to {record.name}")
-            except Exception:
-                pass
+            except FrameworkError as exc:
+                # The save already succeeded; only the confirmation failed.  Log
+                # it (conventions §3) instead of swallowing it silently; anything
+                # that is not a FrameworkError is a defect and still propagates.
+                logger.warning(
+                    "Could not report the save of model %r: %s", model_name, exc
+                )
         return record
 
     def load_model(
@@ -494,8 +499,12 @@ class ModelTrainer:
         if self.reporter is not None:
             try:
                 self.reporter.success(f"✅ Model loaded from {record.name}")
-            except Exception:
-                pass
+            except FrameworkError as exc:
+                # As above: the load succeeded, so a failed confirmation is
+                # logged, not swallowed, and non-FrameworkError defects surface.
+                logger.warning(
+                    "Could not report the load of model %r: %s", model_name, exc
+                )
         return record
 
     def list_saved_models(self) -> list[ArtifactRecord]:

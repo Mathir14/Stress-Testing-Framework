@@ -196,6 +196,29 @@ def test_calibration_metrics_reject_raw_strings_without_classes(
         analyzer.compute_calibration_metrics(np.array(["cat", "dog"]), np.eye(2))
 
 
+def test_calibration_metrics_reject_an_empty_probability_matrix(
+    analyzer: CalibrationAnalyzer,
+):
+    """Run-014 M11: an empty matrix has no samples to average over.
+
+    Before the guard the arithmetic reached a division by the sample count (or
+    an ``AxisError``) and either returned ``nan`` or leaked a raw builtin.  An
+    empty input is a caller bug and must be typed (ADR-025).
+    """
+    with pytest.raises(ValidationError) as excinfo:
+        analyzer.compute_calibration_metrics(np.array([], dtype=int), np.empty((0, 2)))
+    assert excinfo.value.context["shape"] == [0, 2]
+
+
+def test_calibration_metrics_reject_a_one_dimensional_probability_matrix(
+    analyzer: CalibrationAnalyzer,
+):
+    """A 1-D array is a probability *vector*, not a per-class matrix."""
+    with pytest.raises(ValidationError) as excinfo:
+        analyzer.compute_calibration_metrics(np.array([0, 1]), np.array([0.8, 0.2]))
+    assert excinfo.value.context["shape"] == [2]
+
+
 # ── compute_per_class_calibration ────────────────────────────────────────────
 
 

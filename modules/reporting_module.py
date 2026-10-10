@@ -20,6 +20,56 @@ from core.config import ReliabilityWeights, ScoringPolicy, get_config
 from core.errors import ReportExportError
 
 
+def _json_safe(value: Any, _seen: set[int] | None = None) -> Any:
+    """Return ``value`` as data a strict JSON encoder accepts.
+
+    Non-finite floats (``NaN`` / ``±Infinity``) are not valid JSON; emitting them
+    verbatim produces a document no strict parser accepts, so they become
+    ``null`` (ADR-025).  numpy scalars and arrays are converted to Python
+    objects.  A container that contains itself raises ``ValueError`` rather than
+    recursing without bound, so a circular report is a typed export failure.
+
+    Args:
+        value: Any report value.
+        _seen: Container ids on the current recursion path (cycle detection).
+
+    Returns:
+        Any: ``value`` with non-finite floats replaced by ``None`` and numpy
+        types converted to their Python equivalents.
+
+    Raises:
+        ValueError: If a dict/list/tuple contains itself.
+    """
+    if _seen is None:
+        _seen = set()
+    if isinstance(value, dict):
+        if id(value) in _seen:
+            raise ValueError("Circular reference detected")
+        _seen.add(id(value))
+        try:
+            return {key: _json_safe(item, _seen) for key, item in value.items()}
+        finally:
+            _seen.discard(id(value))
+    if isinstance(value, (list, tuple)):
+        if id(value) in _seen:
+            raise ValueError("Circular reference detected")
+        _seen.add(id(value))
+        try:
+            return [_json_safe(item, _seen) for item in value]
+        finally:
+            _seen.discard(id(value))
+    if isinstance(value, np.ndarray):
+        return [_json_safe(item, _seen) for item in value.tolist()]
+    if isinstance(value, np.bool_):
+        return bool(value)
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, (np.floating, float)):
+        number = float(value)
+        return number if np.isfinite(number) else None
+    return value
+
+
 class ReportGenerator:
     """Compile, visualise, and export results from all framework modules."""
 
@@ -401,27 +451,23 @@ class ReportGenerator:
             report: The compiled report dict.
 
         Returns:
-            str: Pretty-printed JSON.
+            str: Pretty-printed JSON.  Non-finite floats are emitted as ``null``
+            so the bytes are always valid JSON (ADR-025).
 
         Raises:
-            ReportExportError: Any value in the report fails JSON serialisation
-                (ADR-019, M4).  Previously the raw ``TypeError`` escaped the
-                module boundary and surfaced as an unrendered traceback.
+            ReportExportError: Any value in the report fails JSON serialisation,
+                including a circular reference (ADR-019, M4, ADR-025).  Previously
+                the raw ``TypeError`` (and a circular-reference ``ValueError``)
+                escaped the module boundary and surfaced as an unrendered
+                traceback; non-finite floats silently produced invalid JSON.
         """
-
-        # Make numpy types JSON-safe
-        def default(obj):
-            if isinstance(obj, (np.integer,)):
-                return int(obj)
-            if isinstance(obj, (np.floating,)):
-                return float(obj)
-            if isinstance(obj, np.ndarray):
-                return obj.tolist()
-            raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
-
         try:
-            return json.dumps(report, indent=2, default=default)
-        except TypeError as exc:
+            safe = _json_safe(report)
+            # ``allow_nan=False`` is defence in depth: ``_json_safe`` has already
+            # replaced non-finite floats, so any that remain raise here rather
+            # than reaching the file as the non-standard ``NaN``/``Infinity``.
+            return json.dumps(safe, indent=2, allow_nan=False)
+        except (TypeError, ValueError, RecursionError) as exc:
             raise ReportExportError(
                 "The report contains a value that cannot be serialised to JSON; "
                 "convert the offending value to a Python scalar or list before "

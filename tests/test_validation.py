@@ -451,6 +451,23 @@ def test_unparseable_strings_are_rejected():
         validate_stress_params("gaussian_noise", {"noise_level": "0.5x"})
 
 
+def test_integer_too_large_for_a_float_is_a_typed_error():
+    """Run-014 M11: ``float(10**400)`` raises ``OverflowError``, not ``ValueError``.
+
+    ``_coerce_number`` wrapped the ``float()`` call in an ``except (TypeError,
+    ValueError)``, so an ``int`` outside the IEEE-754 double range escaped the
+    boundary as the raw ``OverflowError`` — an untyped builtin (conventions §3).
+    It must be a :class:`ValidationError` naming the offending parameter
+    (ADR-025).  Note ``10**400`` is an ``int`` and so takes the direct
+    ``float(value)`` branch, not the string-coercion one.
+    """
+    with pytest.raises(ValidationError) as excinfo:
+        validate_stress_params("gaussian_noise", {"noise_level": 10**400})
+    assert type(excinfo.value) is ValidationError
+    assert excinfo.value.field == "noise_level"
+    assert excinfo.value.context["parameter"] == "noise_level"
+
+
 def test_boolean_is_not_accepted_as_a_number():
     """``True`` is an ``int`` in Python; treating it as ``1.0`` would be a
     silent coercion of an unrelated type into a stress severity."""

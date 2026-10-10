@@ -18,8 +18,12 @@ rated model reports ``"N/A"`` rather than falling back to ranking the unrated.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
+import pytest
+
+from core.errors import ReportExportError
 from modules.reporting_module import ReportGenerator
 
 
@@ -95,3 +99,59 @@ def test_scores_without_a_rated_flag_are_treated_as_rated() -> None:
         reliability_scores={"legacy": legacy},
     )
     assert report["summary"]["best_reliability"] == "legacy"
+
+
+# ── export_to_json: non-finite floats and circular references ────────────────
+#
+# A second boundary lives in this module.  ``export_to_json`` used a ``default``
+# hook that converted numpy scalars but left non-finite floats alone, so a report
+# that carried a ``nan`` (an empty-bin ECE, say) serialised to the non-standard
+# tokens ``NaN``/``Infinity`` that no strict JSON parser accepts.  And it caught
+# only ``TypeError``, so a self-referential report raised the raw ``ValueError``
+# from ``json`` rather than the module's typed ``ReportExportError`` (run-014
+# M11, ADR-025).  These tests pin the corrected contract.
+
+
+def test_non_finite_floats_export_as_json_null() -> None:
+    """``nan``/``±inf`` are not JSON; they must become ``null``, not raw tokens."""
+    payload = ReportGenerator().export_to_json(
+        {"ece": float("nan"), "up": float("inf"), "down": float("-inf")}
+    )
+    assert "NaN" not in payload
+    assert "Infinity" not in payload
+    assert json.loads(payload) == {"ece": None, "up": None, "down": None}
+
+
+def test_finite_floats_are_unchanged_by_the_safety_pass() -> None:
+    """The non-finite rewrite must not touch an ordinary float."""
+    payload = ReportGenerator().export_to_json({"ece": 0.25, "acc": -1.5})
+    assert json.loads(payload) == {"ece": 0.25, "acc": -1.5}
+
+
+def test_numpy_scalars_and_arrays_export_as_python_values() -> None:
+    """The old ``default`` hook did this; the rewrite must keep doing it."""
+    numpy = pytest.importorskip("numpy")
+    payload = ReportGenerator().export_to_json(
+        {
+            "i": numpy.int64(3),
+            "f": numpy.float64(0.5),
+            "b": numpy.bool_(True),
+            "a": numpy.array([1, 2, 3]),
+        }
+    )
+    assert json.loads(payload) == {"i": 3, "f": 0.5, "b": True, "a": [1, 2, 3]}
+
+
+def test_a_circular_report_is_a_typed_export_error() -> None:
+    """A self-referential report must be ``ReportExportError``, not ``ValueError``."""
+    report: dict[str, Any] = {}
+    report["self"] = report
+    with pytest.raises(ReportExportError) as excinfo:
+        ReportGenerator().export_to_json(report)
+    assert excinfo.value.context["format"] == "json"
+
+
+def test_non_finite_floats_nested_in_lists_are_also_nulled() -> None:
+    """The rewrite walks containers, so a nested ``nan`` cannot slip through."""
+    payload = ReportGenerator().export_to_json({"rows": [{"drop": float("nan")}]})
+    assert json.loads(payload) == {"rows": [{"drop": None}]}

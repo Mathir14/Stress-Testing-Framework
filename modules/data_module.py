@@ -459,6 +459,15 @@ class DataManager:
             ) from exc
 
         # Second split: separate validation set from remaining data
+        if test_size == 1:
+            # ``test_size`` can be an absolute count as well as a fraction; a
+            # value of 1 leaves nothing to divide, so reject it with a typed
+            # error rather than leaking a raw ZeroDivisionError (ADR-025).
+            raise DatasetError(
+                f"test_size={test_size!r} leaves no samples for the validation "
+                "split; use a proportion below 1.0.",
+                context={"stage": "validation", "test_size": test_size},
+            )
         val_size_adjusted = val_size / (1 - test_size)
         try:
             X_train, X_val, y_train, y_val = train_test_split(

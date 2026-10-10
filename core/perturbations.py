@@ -492,6 +492,15 @@ def apply_perturbation(
     normalised = validate_stress_params(op, params or {}, resolve_bounds(bounds))
 
     values, template = _to_float_array(X)
+    # A zero-row input is rejected for *both* containers before any operator
+    # runs (ADR-025).  The frame path already fails in ``coerce_numeric_array``
+    # via ``validate_frame``; this guard makes the ndarray path symmetric so a
+    # raw numpy ``ValueError`` from an empty reduction cannot escape.
+    if values.shape[0] == 0:
+        raise ValidationError(
+            f"Cannot apply {op!r} to a feature frame with no rows.",
+            context={"op": op, "shape": list(values.shape)},
+        )
     if values.shape[1] == 0:
         raise ValidationError(
             f"Cannot apply {op!r} to a feature frame with no columns.",

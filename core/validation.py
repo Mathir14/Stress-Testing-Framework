@@ -201,7 +201,7 @@ def _coerce_number(parameter: str, value: Any, op: str) -> float:
     if not isinstance(value, (int, float, np.integer, np.floating)):
         try:
             return float(value)
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
             raise ValidationError(
                 f"Parameter {parameter!r} of operator {op!r} must be a number, "
                 f"got {type(value).__name__}.",
@@ -209,7 +209,18 @@ def _coerce_number(parameter: str, value: Any, op: str) -> float:
                 value=repr(value),
                 context={"op": op, "parameter": parameter},
             ) from exc
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        # ``float(10**400)`` overflows the IEEE-754 double range; without this
+        # guard a raw ``OverflowError`` escapes the boundary (ADR-025).
+        raise ValidationError(
+            f"Parameter {parameter!r} of operator {op!r} is too large to "
+            f"represent as a float: {value!r}.",
+            field=parameter,
+            value=repr(value),
+            context={"op": op, "parameter": parameter},
+        ) from exc
     if not np.isfinite(number):
         raise ParameterOutOfRangeError(
             f"Parameter {parameter!r} of operator {op!r} must be finite, got {value!r}.",

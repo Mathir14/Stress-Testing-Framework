@@ -18,7 +18,7 @@ from typing import Any, Mapping
 import numpy as np
 import pandas as pd
 
-from core.errors import UnsupportedStressTypeError
+from core.errors import UnsupportedStressTypeError, ValidationError
 from core.perturbations import apply_perturbation, operation_key
 
 # ``core.validation`` owns both vocabularies (ADR-011.1) and the parameter
@@ -361,6 +361,14 @@ class StressTester:
         results = {}
 
         for config in stress_configs:
+            if not isinstance(config, Mapping) or "type" not in config:
+                # A missing ``type`` key used to leak a raw ``KeyError`` from
+                # indexing (ADR-025); name the defect instead.
+                raise ValidationError(
+                    "Each batch stress configuration must be a mapping with a "
+                    "'type' key naming one of the registered stress operators.",
+                    context={"config": repr(config)},
+                )
             stress_type = config["type"]
             raw_params = config.get("params", {})
             name = config.get("name", stress_type)
