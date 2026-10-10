@@ -100,8 +100,25 @@ def test_adding_components_applies_each_weight():
     composite = ModelComparator().compute_composite_score(
         metrics, {"M": 60.0}, {"M": 0.2}
     )
-    # 87.5*0.5 + 60.0*0.25 + 80.0*0.25 = 43.75 + 15.0 + 20.0
-    assert composite["M"] == pytest.approx(78.75)
+    # Calibration scores against ece_cap=0.5 (not a hardcoded 1.0): an ECE of
+    # 0.2 is 1 - 0.2/0.5 = 0.6 -> a 60.0 component (run-015 M3).
+    # 87.5*0.5 + 60.0*0.25 + 60.0*0.25 = 43.75 + 15.0 + 15.0
+    assert composite["M"] == pytest.approx(73.75)
+
+
+def test_the_calibration_cap_comes_from_the_configured_policy():
+    """The calibration component uses ``ReliabilityWeights.ece_cap``.
+
+    ``ece_cap`` defaults to 0.5, so an ECE of 0.5 is a zero component and an ECE
+    of 0.25 is half credit — not the 75.0 a hardcoded ``1.0`` cap would give.
+    """
+    metrics = _metrics()
+    comparator = ModelComparator()
+    assert comparator.weights.ece_cap == get_config().reliability.ece_cap
+    at_cap = comparator.compute_composite_score(metrics, None, {"M": 0.5})
+    half = comparator.compute_composite_score(metrics, None, {"M": 0.25})
+    assert at_cap["M"] == pytest.approx(43.75)
+    assert half["M"] == pytest.approx(43.75 + 12.5)
 
 
 def test_a_missing_component_is_zero_not_redistributed():
@@ -123,9 +140,10 @@ def test_a_missing_component_is_zero_not_redistributed():
 def test_the_calibration_component_clips_at_zero():
     metrics = _metrics()
     comparator = ModelComparator()
-    good = comparator.compute_composite_score(metrics, None, {"M": 0.25})  # 75.0 x 0.25
+    # ece_cap=0.5: ECE 0.25 -> 0.5 fraction -> a 50.0 component; ECE >= 0.5 -> 0.
+    good = comparator.compute_composite_score(metrics, None, {"M": 0.25})  # 50.0 x 0.25
     awful = comparator.compute_composite_score(metrics, None, {"M": 2.0})  # clipped to 0
-    assert good["M"] == pytest.approx(43.75 + 18.75)
+    assert good["M"] == pytest.approx(43.75 + 12.5)
     assert awful["M"] == pytest.approx(43.75)
 
 
@@ -152,7 +170,7 @@ def test_composite_is_monotone_over_the_component_lattice(comparator: ModelCompa
     """
     metrics = _metrics()
     robustness = {"M": 61.2}
-    calibration = {"M": 0.18}  # -> an 82.0 component
+    calibration = {"M": 0.18}  # ece_cap=0.5 -> a 64.0 component
 
     def score(state: frozenset[str]) -> float:
         return comparator.compute_composite_score(

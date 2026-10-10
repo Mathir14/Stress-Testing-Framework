@@ -11,7 +11,8 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
-from core.config import ScoringPolicy, get_config
+from core.config import ReliabilityWeights, ScoringPolicy, get_config
+from core.scoring import calibration_fraction
 
 #: Composite components, in display order.  The weights themselves live in
 #: :class:`core.config.ScoringPolicy` (single owner, ADR-018); this tuple only
@@ -22,7 +23,11 @@ _COMPONENTS = ("performance", "robustness", "calibration")
 class ModelComparator:
     """Aggregates and compares performance across trained models."""
 
-    def __init__(self, policy: ScoringPolicy | None = None) -> None:
+    def __init__(
+        self,
+        policy: ScoringPolicy | None = None,
+        weights: ReliabilityWeights | None = None,
+    ) -> None:
         """Bind the unified scoring policy.
 
         Args:
@@ -30,8 +35,14 @@ class ModelComparator:
                 measured-components gate (ADR-018).  ``None`` (the default)
                 uses the process-wide configuration singleton, which is what the
                 app builds.
+            weights: Component caps — currently the ``ece_cap`` the calibration
+                component is scored against (run-015 M3).  ``None`` (the
+                default) uses the process-wide configuration singleton, so the
+                comparator's ``1 - ECE`` cap can never disagree with the
+                reliability scorer's.
         """
         self.policy = get_config().scoring if policy is None else policy
+        self.weights = get_config().reliability if weights is None else weights
 
     # ------------------------------------------------------------------ #
     #  Data collection helpers                                             #
@@ -276,7 +287,13 @@ class ModelComparator:
 
         if calibration_ece and model in calibration_ece:
             ece = float(calibration_ece[model])
-            components["calibration"] = max(0.0, 1.0 - ece) * 100.0
+            # Score against the configured ece_cap via the shared transform, not
+            # a hardcoded 1.0 — the reliability scorer uses the same cap, so the
+            # two "calibration /100" figures shown to the user cannot disagree
+            # (run-015 M3, ADR-021).
+            components["calibration"] = (
+                calibration_fraction(ece, ece_cap=self.weights.ece_cap) * 100.0
+            )
             available.append("calibration")
         else:
             components["calibration"] = None
