@@ -29,9 +29,14 @@ from __future__ import annotations
 
 import warnings
 
-import numpy as np
-import pandas as pd
 import pytest
+
+pytest.importorskip("numpy", reason="data-preprocessing tests need the scientific stack")
+pytest.importorskip("pandas", reason="data-preprocessing tests need the scientific stack")
+pytest.importorskip("sklearn", reason="the split path needs scikit-learn")
+
+import numpy as np  # noqa: E402 - after importorskip by design
+import pandas as pd  # noqa: E402 - after importorskip by design
 
 from core.errors import DatasetError, DatasetLoadError, ValidationError
 from modules.data_module import FILL_STRATEGIES, DataManager

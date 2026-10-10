@@ -454,7 +454,7 @@ def test_reset_config_cache_rereads_the_environment(monkeypatch):
 def test_config_imports_nothing_project_local_at_module_scope():
     """§2.3: rung 1 imports no project-local module; the one ``core.errors``
     import must stay function-local.  See
-    ``test_architecture.py::test_core_config_project_local_imports_are_deferred_only``
+    ``test_architecture.py::test_config_deferred_import_is_cycle_free``
     for the full assertion."""
     path = Path(__file__).resolve().parent.parent / "core" / "config.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))

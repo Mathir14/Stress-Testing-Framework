@@ -11,10 +11,10 @@ on a discarded upcast temporary and the returned frame was byte-identical to the
 input.  ``feature_dropout`` was the lone exception, because multiplying by a
 ``float`` mask happens to keep the block dtype ``int64``.
 
-So the two tests that matter most here are
-:func:`test_mixed_dtype_frame_changes_under_every_operator` (the regression) and
-:func:`test_output_is_never_byte_identical_to_input_for_nonzero_parameters`
-(the general invariant).
+So the test that matters most here is
+:func:`test_mixed_dtype_frame_changes_under_every_operator`: for every operator's
+nonzero parameters the output is never byte-identical to the input, which is the
+invariant the five silent no-ops violated.
 
 Bit-fidelity with the old numbers is explicitly **not** asserted (ADR-010.5): a
 vectorised implementation draws randomness in a different order, so parity means
@@ -56,9 +56,13 @@ import copy
 import tracemalloc
 from dataclasses import replace
 
-import numpy as np
-import pandas as pd
 import pytest
+
+pytest.importorskip("numpy", reason="perturbation tests need the scientific stack")
+pytest.importorskip("pandas", reason="perturbation tests need the scientific stack")
+
+import numpy as np  # noqa: E402 - after importorskip by design
+import pandas as pd  # noqa: E402 - after importorskip by design
 
 from core.config import StressBounds
 from core.errors import (
