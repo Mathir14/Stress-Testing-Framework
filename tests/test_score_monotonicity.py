@@ -185,11 +185,14 @@ def test_composite_equals_the_weighted_component_sum():
     """Fixed denominator: ``perf*0.5 + rob*0.25 + cal*0.25``, missing -> 0."""
     comparator = ModelComparator()
     perf = 87.5  # (0.9 + 0.85) / 2 * 100
+    # Calibration scores against the configured ece_cap (run-015 T5/M3), not a
+    # hardcoded 1.0: an ECE of 0.18 with ece_cap=0.5 is a 64.0/100 component.
+    cal = (1.0 - 0.18 / comparator.weights.ece_cap) * 100.0
     states = {
         frozenset(): (0.0, 0.0),
         frozenset({"robustness"}): (61.2, 0.0),
-        frozenset({"calibration"}): (0.0, 82.0),
-        frozenset({"robustness", "calibration"}): (61.2, 82.0),
+        frozenset({"calibration"}): (0.0, cal),
+        frozenset({"robustness", "calibration"}): (61.2, cal),
     }
     for state, (rob, cal) in states.items():
         expected = (

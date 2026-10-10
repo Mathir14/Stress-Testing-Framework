@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import logging
 
-import numpy as np
 import pandas as pd
 import streamlit as st
 
 from core.state import AppContext, StateKeys
 from modules.calibration_module import CalibrationAnalyzer
 from modules.data_module import DataManager
+from modules.evidence_module import (
+    calibration_ece,
+    class_count,
+    collect_evidence,
+    hce_rates,
+    mean_entropies,
+)
 from modules.model_module import ModelTrainer
 from modules.reliability_module import ReliabilityScorer
-from utils.metrics import get_prediction_entropy, identify_high_confidence_errors
 
 logger = logging.getLogger(__name__)
 
@@ -50,85 +55,30 @@ def render(ctx: AppContext) -> None:
             key="rel_dataset",
         )
 
-        # ── Gather calibration ECE ────────────────────────────────────────
-        cal_ece: dict = {}
-        if dm.X_test is not None and dm.y_test is not None:
-            for mn in trainer.trained_models:
-                try:
-                    _, probs = trainer.predict(mn, dm.X_test)
-                    model_obj = trainer.trained_models.get(mn)
-                    cal_metrics = cal_an.compute_calibration_metrics(
-                        dm.y_test,
-                        probs,
-                        classes=getattr(model_obj, "classes_", None),
-                    )
-                    cal_ece[mn] = cal_metrics["ece"]
-                except Exception as exc:
-                    # Conventions §3: a blind catch must log, not pass. A model
-                    # that cannot be predicted is now distinguishable in the log
-                    # from one that simply has no ECE recorded (MAJ-004).
-                    logger.warning(
-                        "Calibration ECE unavailable for model %r; its score will "
-                        "use the default calibration weight. Cause: %s",
-                        mn,
-                        exc,
-                    )
-
-        # ── Gather entropy & HCE rate ─────────────────────────────────────
-        entropy_data: dict = {}
-        hce_data: dict = {}
-        if dm.X_test is not None and dm.y_test is not None:
-            for mn in trainer.trained_models:
-                try:
-                    preds, probs = trainer.predict(mn, dm.X_test)
-                    entropies = get_prediction_entropy(probs)
-                    entropy_data[mn] = float(np.mean(entropies))
-                    hce_info = identify_high_confidence_errors(
-                        dm.y_test, preds, probs, threshold=0.9
-                    )
-                    total_preds = len(preds)
-                    hce_data[mn] = (
-                        hce_info["count"] / total_preds if total_preds > 0 else 0.0
-                    )
-                except Exception as exc:
-                    # Conventions §3: log rather than pass. Entropy and the
-                    # high-confidence-error rate are both derived from a single
-                    # predict() call, so one failure loses both components.
-                    logger.warning(
-                        "Entropy / high-confidence-error rate unavailable for model "
-                        "%r; its score will use the default confidence weights. "
-                        "Cause: %s",
-                        mn,
-                        exc,
-                    )
-
-        # ── Stress robustness ─────────────────────────────────────────────
+        # ── Per-model evidence ────────────────────────────────────────────
+        # One predict per model; the single evidence owner in
+        # modules.evidence_module gathers ECE, entropy and HCE so this page
+        # cannot drift from Modules 7 and 9 (run-015 M2/M3, R6).
         stress_results = ctx.store.get(StateKeys.BATCH_STRESS_RESULTS_BY_MODEL) or {}
-
-        # ── Number of classes ─────────────────────────────────────────────
-        n_classes = 2
-        if dm.y_test is not None:
-            try:
-                n_classes = len(np.unique(dm.y_test))
-            except Exception as exc:
-                # n_classes=2 above is the documented binary default; log so a
-                # multiclass score is never silently graded on a binary basis.
-                logger.warning(
-                    "Could not determine the class count from y_test; falling back "
-                    "to the binary default of 2, which will mis-grade a multiclass "
-                    "model. Cause: %s",
-                    exc,
-                )
+        with st.spinner("Gathering per-model evidence…"):
+            evidence = collect_evidence(
+                trainer,
+                dm.X_test,
+                dm.y_test,
+                stress_results=stress_results or None,
+                dataset_name=dataset_choice,
+                calibration_analyzer=cal_an,
+            )
 
         # ── Compute scores ────────────────────────────────────────────────
         scores_dict = scorer.score_all_models(
             trainer,
             dataset_name=dataset_choice,
             stress_results=stress_results or None,
-            calibration_ece=cal_ece or None,
-            entropy_data=entropy_data or None,
-            hce_data=hce_data or None,
-            n_classes=n_classes,
+            calibration_ece=calibration_ece(evidence) or None,
+            entropy_data=mean_entropies(evidence) or None,
+            hce_data=hce_rates(evidence) or None,
+            n_classes=class_count(evidence),
         )
 
         if not scores_dict:

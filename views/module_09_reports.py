@@ -2,17 +2,22 @@ from __future__ import annotations
 
 import logging
 
-import numpy as np
 import pandas as pd
 import streamlit as st
 
 from core.state import AppContext, StateKeys
 from modules.calibration_module import CalibrationAnalyzer
 from modules.data_module import DataManager
+from modules.evidence_module import (
+    calibration_ece,
+    class_count,
+    collect_evidence,
+    hce_rates,
+    mean_entropies,
+)
 from modules.model_module import ModelTrainer
 from modules.reliability_module import ReliabilityScorer
 from modules.reporting_module import ReportGenerator
-from utils.metrics import get_prediction_entropy, identify_high_confidence_errors
 
 logger = logging.getLogger(__name__)
 
@@ -51,78 +56,30 @@ def render(ctx: AppContext) -> None:
             key="rep_dataset",
         )
 
-        # ── Gather calibration ECE ────────────────────────────────────────
-        rep_cal_ece: dict = {}
-        if dm.X_test is not None and dm.y_test is not None:
-            for mn in trainer.trained_models:
-                try:
-                    _, probs = trainer.predict(mn, dm.X_test)
-                    model_obj = trainer.trained_models.get(mn)
-                    cm_r = cal_an.compute_calibration_metrics(
-                        dm.y_test,
-                        probs,
-                        classes=getattr(model_obj, "classes_", None),
-                    )
-                    rep_cal_ece[mn] = cm_r["ece"]
-                except Exception as exc:
-                    # Conventions §3: a blind catch must log (MAJ-004). The model
-                    # is still omitted from the report, but the omission is now
-                    # traceable rather than invisible.
-                    logger.warning(
-                        "Calibration ECE unavailable for model %r; it will be "
-                        "reported without a calibration figure. Cause: %s",
-                        mn,
-                        exc,
-                    )
-
-        # ── Gather reliability scores ────────────────────────────────────
+        # ── Per-model evidence ────────────────────────────────────────────
+        # One predict per model; the single evidence owner in
+        # modules.evidence_module gathers ECE, entropy and HCE so the report
+        # cannot disagree with Modules 7 and 8 (run-015 M2/M3, R6).
         stress_res = ctx.store.get(StateKeys.BATCH_STRESS_RESULTS_BY_MODEL) or {}
-        n_cls = 2
-        if dm.y_test is not None:
-            try:
-                n_cls = len(np.unique(dm.y_test))
-            except Exception as exc:
-                # n_cls=2 above is the documented binary default; log so a
-                # multiclass report is never silently graded as binary.
-                logger.warning(
-                    "Could not determine the class count from y_test; falling back "
-                    "to the binary default of 2, which will mis-grade a multiclass "
-                    "model in the exported report. Cause: %s",
-                    exc,
-                )
-
-        rep_entropy: dict = {}
-        rep_hce: dict = {}
-        if dm.X_test is not None and dm.y_test is not None:
-            for mn in trainer.trained_models:
-                try:
-                    preds_r, probs_r = trainer.predict(mn, dm.X_test)
-                    ents = get_prediction_entropy(probs_r)
-                    rep_entropy[mn] = float(np.mean(ents))
-                    hce_info = identify_high_confidence_errors(
-                        dm.y_test, preds_r, probs_r, threshold=0.9
-                    )
-                    rep_hce[mn] = hce_info["count"] / max(len(preds_r), 1)
-                except Exception as exc:
-                    # Conventions §3: log rather than pass. Entropy and the
-                    # high-confidence-error rate share one predict() call, so a
-                    # single failure loses both reported figures.
-                    logger.warning(
-                        "Entropy / high-confidence-error rate unavailable for model "
-                        "%r; it will be reported without confidence figures. "
-                        "Cause: %s",
-                        mn,
-                        exc,
-                    )
+        with st.spinner("Gathering per-model evidence…"):
+            evidence = collect_evidence(
+                trainer,
+                dm.X_test,
+                dm.y_test,
+                stress_results=stress_res or None,
+                dataset_name=rep_dataset,
+                calibration_analyzer=cal_an,
+            )
+        rep_cal_ece = calibration_ece(evidence)
 
         rel_scores = scorer.score_all_models(
             trainer,
             dataset_name=rep_dataset,
             stress_results=stress_res or None,
             calibration_ece=rep_cal_ece or None,
-            entropy_data=rep_entropy or None,
-            hce_data=rep_hce or None,
-            n_classes=n_cls,
+            entropy_data=mean_entropies(evidence) or None,
+            hce_data=hce_rates(evidence) or None,
+            n_classes=class_count(evidence),
         )
 
         # ── Compile report ────────────────────────────────────────────────

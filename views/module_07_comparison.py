@@ -2,14 +2,21 @@ from __future__ import annotations
 
 import logging
 
-import numpy as np
 import pandas as pd
 import streamlit as st
 
+from core.config import get_config
 from core.state import AppContext, StateKeys
 from modules.calibration_module import CalibrationAnalyzer
 from modules.comparison_module import ModelComparator
 from modules.data_module import DataManager
+from modules.evidence_module import (
+    calibration_ece,
+    collect_evidence,
+)
+from modules.evidence_module import (
+    robustness_scores as compute_robustness_scores,
+)
 from modules.model_module import ModelTrainer
 
 logger = logging.getLogger(__name__)
@@ -60,45 +67,31 @@ def render(ctx: AppContext) -> None:
                 "Run Module 2 evaluation first."
             )
         else:
-            # ── Stress robustness ─────────────────────────────────────────
-            stress_results = ctx.store.get(StateKeys.BATCH_STRESS_RESULTS_BY_MODEL) or {}
-            robustness_scores: dict[str, float] = {}
-            if stress_results:
-                for model_name, model_stress in stress_results.items():
-                    if model_name in models_with_data:
-                        drops = [
-                            r.get("performance_drop", 0)
-                            for r in model_stress.values()
-                            if isinstance(r, dict)
-                        ]
-                        avg_drop = float(np.mean(drops)) if drops else 0.0
-                        robustness_scores[model_name] = round(max(0.0, 100.0 - avg_drop * 100), 2)
-
-            # ── Calibration ECE ───────────────────────────────────────────
-            cal_ece: dict[str, float] = {}
-            cal_analyzer = calibration_analyzer
+            # ── Per-model evidence (ECE + stress drop) ────────────────────
+            # One predict per model, gathered and logged by the single evidence
+            # owner rather than re-derived here (run-015 M2/M3).
             dm = data_manager
-            if dm.X_test is not None and dm.y_test is not None:
-                for model_name in models_with_data:
-                    try:
-                        _, probs = trainer.predict(model_name, dm.X_test)
-                        model_obj = trainer.trained_models.get(model_name)
-                        cal_metrics = cal_analyzer.compute_calibration_metrics(
-                            dm.y_test,
-                            probs,
-                            classes=getattr(model_obj, "classes_", None),
-                        )
-                        cal_ece[model_name] = cal_metrics["ece"]
-                    except Exception as exc:
-                        # Conventions §3: a blind catch must log. Silently skipping
-                        # the model made a broken model indistinguishable from one
-                        # with no calibration data (MAJ-004).
-                        logger.warning(
-                            "Calibration ECE unavailable for model %r; the model is "
-                            "excluded from the composite score. Cause: %s",
-                            model_name,
-                            exc,
-                        )
+            stress_results = ctx.store.get(StateKeys.BATCH_STRESS_RESULTS_BY_MODEL) or {}
+            with st.spinner("Gathering per-model evidence…"):
+                evidence = collect_evidence(
+                    trainer,
+                    dm.X_test,
+                    dm.y_test,
+                    stress_results=stress_results or None,
+                    dataset_name=dataset_choice,
+                    calibration_analyzer=calibration_analyzer,
+                )
+            drop_cap = get_config().reliability.drop_cap
+            robustness_scores: dict[str, float] = {
+                m: s
+                for m, s in compute_robustness_scores(evidence, drop_cap=drop_cap).items()
+                if m in models_with_data
+            }
+            cal_ece: dict[str, float] = {
+                m: e
+                for m, e in calibration_ece(evidence).items()
+                if m in models_with_data
+            }
 
             # ── Composite score ───────────────────────────────────────────
             assessed = comparator.rate_models(
@@ -243,7 +236,7 @@ def render(ctx: AppContext) -> None:
                             {
                                 "Model": m,
                                 "ECE": f"{e:.4f}",
-                                "Quality": cal_analyzer.get_calibration_quality(e),
+                                "Quality": calibration_analyzer.get_calibration_quality(e),
                             }
                             for m, e in sorted(cal_ece.items(), key=lambda x: x[1])
                         ]
