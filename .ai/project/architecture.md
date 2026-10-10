@@ -1101,8 +1101,14 @@ above.
     `ModelComparator`'s calibration uses the configured `ReliabilityWeights.ece_cap`
     (the hardcoded `1.0` cap is deleted). Empty or non-numeric stress evidence
     yields `mean_performance_drop=None` and the missing-component points, never a
-    full-capacity zero-drop. The parity fixture is regenerated with each delta
-    enumerated here.
+    full-capacity zero-drop. The parity fixture
+    (`tests/fixtures/reliability_baseline.json`) was regenerated: the legacy cases
+    are byte-identical, and four new `*_drop` cases (× the three class arities, so
+    12 added entries) freeze the C1/C1b/`NaN` deltas — `negative_drop` clamps
+    robustness to the 25.0 cap (total `88.75` at `n_classes=2`), `drop_over_cap`
+    floors it at `0.0`, `missing_drop` lists `Robustness` in `missing_components`
+    and scores the missing-component points, and `nan_drop` floors to `0.0` rather
+    than escaping as `NaN`.
 21. **Module-level log records are observable again** (ADR-022, run-015 M4).
     `configure_logging` installs its handler on the **root** logger rather than a
     private `"stf"` logger, so `core`/`modules`/`views`/`app` `INFO`/`WARNING`/
