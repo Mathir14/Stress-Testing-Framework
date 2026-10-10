@@ -28,6 +28,9 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip("pandas", reason="modules.reliability_module needs the scientific stack")
+pytest.importorskip("plotly", reason="modules.reliability_module needs the scientific stack")
+
 from core.config import FAILING_GRADE, get_config
 from modules.reliability_module import ReliabilityScorer, _grade
 
@@ -36,10 +39,23 @@ FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "reliability_basel
 
 @pytest.fixture(scope="module")
 def baseline() -> dict:
-    """Load the frozen baseline payload."""
+    """Load the frozen baseline payload.
+
+    **Fails closed** (ADR-026.1).  This used to ``pytest.skip`` when the fixture
+    was absent, which meant deleting or relocating
+    ``tests/fixtures/reliability_baseline.json`` turned the suite's *only*
+    bit-exact numeric freeze green — a gate that passes for the wrong reason,
+    which is the cardinal failure mode ADR-010 warns about.  A missing baseline
+    is a real problem with the test's own inputs, so it is reported as a failure
+    with the regeneration command in the message.
+    """
     if not FIXTURE_PATH.is_file():
-        pytest.skip(
-            f"baseline fixture {FIXTURE_PATH} is missing; run `python -m tests.capture_baseline`"
+        pytest.fail(
+            f"baseline fixture {FIXTURE_PATH} is missing, so the bit-exact "
+            "reliability freeze cannot run. Regenerate it with "
+            "`python -m tests.capture_baseline` and review the diff before "
+            "committing (ADR-026.1: a freeze that skips is not a freeze).",
+            pytrace=False,
         )
     return json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
 
