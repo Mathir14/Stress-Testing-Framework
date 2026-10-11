@@ -1117,3 +1117,55 @@ Numeric defaults referenced here are frozen by ADR-005 parity tests.
   No production behaviour changes.
 
 ---
+
+## ADR-027 — One reading normaliser at the comparison boundary; a non-finite reading is missing
+
+- **Status:** Accepted
+- **Context:** The run-015 Critic left one residual boundary finding and one
+  consistency finding on `modules/comparison_module.py`. **MIN-1**:
+  `_component_scores` called `float(robustness_dict[model])` and
+  `float(calibration_ece[model])` directly, so a non-numeric reading supplied by
+  a caller of the **public** `ModelComparator.rate_models` raised a raw
+  `ValueError`/`TypeError` across the boundary that conventions §3 requires be
+  typed, and which `views.reporters.render_errors` (which catches only
+  `FrameworkError`) could not render. **Consistency**: a **non-finite**
+  (`nan`/`±inf`) reading floored to a `0.0` component that still counted in
+  `available_components`, whereas an absent entry was `None`/`missing_components`
+  — two representations of "not measured".
+- **Decision:**
+  1. A single private helper, `_normalise_reading(component, model, raw)`, is the
+     one translation point for both optional readings. It raises a typed
+     `ValidationError` (message and `context` naming the component and the model)
+     for a `bool` or any non-`float`-coercible value, and returns `None` for a
+     numeric-but-non-finite value. Finite values are clamped to `[0.0, 100.0]`.
+  2. `_component_scores` routes **both** `robustness_dict[model]` and
+     `calibration_ece[model]` through the helper and contains no bare `float()`
+     coercion of a reading. A `None` result — whether from a non-finite reading or
+     from the model being absent from the dict — lands in `missing_components`,
+     never in `available_components`, and therefore does not count toward `rated`.
+  3. **The `{reliability}` `nan_drop` semantics are deliberately not
+     reconciled.** `ReliabilityScorer` continues to floor a `NaN` drop to a `0.0`
+     component that stays *available*, because that behaviour is frozen
+     bit-exactly by `tests/fixtures/reliability_baseline.json`; changing it would
+     change published scores. The two paths diverge by intent: `{reliability}`
+     treats a present-but-degenerate measurement as available, while
+     `{comparison}` treats a reading that is not finite as not measured.
+- **Rationale:** MIN-1 is a boundary-completeness defect of the class ADR-019 and
+  ADR-025 close: a public API may not leak a builtin exception. The consistency
+  half is ADR-018's own rule — "a measurement that does not exist" and "a
+  measurement that is not finite" are the same state to a ranking — applied to
+  the one boundary that still conflated them. Doing both through one helper is
+  what makes the fix durable: two hand-copied `float()` conversions are exactly
+  how the two components drifted apart in the first place.
+- **Consequences:** A model whose only second measured component was a non-finite
+  reading now drops to `missing` and can flip `rated` to `False` — intended (a
+  non-finite reading never genuinely measured it), asserted by
+  `tests/test_comparison.py`, and unreachable from the shipped UI, whose reading
+  dictionaries only ever carry finite scores for `models_with_data`. A T0 `ast`
+  gate (`tests/test_architecture.py`) asserts the helper exists exactly once and
+  that `_component_scores` contains no bare `float()` and routes both readings
+  through it; a falsification control proves the gate can fail. No public
+  signature changes, no `core/` change, no new dependency, and the reliability
+  parity fixture stays byte-identical.
+
+---

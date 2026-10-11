@@ -13,12 +13,62 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from core.config import ReliabilityWeights, ScoringPolicy, get_config
+from core.errors import ValidationError
 from core.scoring import calibration_fraction, performance_fraction
 
 #: Composite components, in display order.  The weights themselves live in
 #: :class:`core.config.ScoringPolicy` (single owner, ADR-018); this tuple only
 #: fixes the order components are presented in.
 _COMPONENTS = ("performance", "robustness", "calibration")
+
+
+def _normalise_reading(component: str, model: str, raw: Any) -> float | None:
+    """Normalise one optional reading at the ``rate_models`` boundary.
+
+    The single translation point for the two optional reading dicts
+    (``robustness_dict`` and ``calibration_ece``): both are routed through here
+    by :meth:`ModelComparator._component_scores` so the two components cannot
+    drift apart again (ADR-027, run-016).
+
+    A reading is a *measurement* only when it is float-coercible and finite.
+    ``None`` in the input dict — the model being absent — is handled by the
+    caller and never reaches this function; a value of ``None`` **inside** the
+    dict is a caller misuse and raises.
+
+    Args:
+        component: Component name (``"robustness"`` / ``"calibration"``), used
+            in the error message and the machine ``context``.
+        model: Model name, used in the error message and the machine ``context``.
+        raw: The reading supplied by the caller.
+
+    Returns:
+        float | None: The finite reading clamped to ``[0.0, 100.0]``, or ``None``
+        when the reading is numeric but non-finite — "not measured" and
+        "measured as ``nan``/``inf``" are one class at this boundary (ADR-018).
+
+    Raises:
+        ValidationError: ``raw`` is not float-coercible (``str``, a custom
+            object, or a ``None`` value inside the dict) or is a ``bool`` —
+            ``bool`` is a subclass of ``int`` in Python, so it would otherwise
+            coerce silently to ``1.0``.
+    """
+    if isinstance(raw, bool):
+        raise ValidationError(
+            f"The {component!r} reading for model {model!r} must be a number, "
+            f"not a boolean; got {raw!r}.",
+            context={"component": component, "model": model, "value": raw},
+        )
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(
+            f"The {component!r} reading for model {model!r} must be a finite "
+            f"number; got {raw!r}.",
+            context={"component": component, "model": model, "value": raw},
+        ) from exc
+    if not math.isfinite(value):
+        return None
+    return min(max(value, 0.0), 100.0)
 
 
 class ModelComparator:
@@ -282,26 +332,33 @@ class ModelComparator:
         available = ["performance"]
         missing: list[str] = []
 
-        if robustness_dict and model in robustness_dict:
-            # Every non-finite reading scores zero rather than escaping into the
-            # published composite (run-015 review): the in-app source is finite,
-            # but ``rate_models`` is public and a ``NaN`` here would otherwise
-            # produce a ``NaN`` composite and grade.  ``+inf`` is the subtler
-            # case — ``min(max(inf, 0.0), 100.0)`` is ``100.0``, so clamping
-            # alone would award *full credit* for a measurement that does not
-            # exist; routing all non-finite values through the no-credit floor
-            # keeps the two infinities and ``NaN`` consistent (run-015 M+).
-            robustness = float(robustness_dict[model])
-            if not math.isfinite(robustness):
-                robustness = 0.0
-            components["robustness"] = min(max(robustness, 0.0), 100.0)
-            available.append("robustness")
-        else:
+        # Both optional readings are normalised through the one helper (ADR-027):
+        # a reading that is not float-coercible raises a typed ``ValidationError``
+        # rather than leaking a raw ``ValueError``/``TypeError`` across the public
+        # ``rate_models`` boundary, and a numeric-but-non-finite reading is
+        # "missing", not a floored zero that still counts as measured evidence
+        # (ADR-018).  A model absent from a reading dict stays missing.
+        robustness = (
+            _normalise_reading("robustness", model, robustness_dict[model])
+            if robustness_dict and model in robustness_dict
+            else None
+        )
+        if robustness is None:
             components["robustness"] = None
             missing.append("robustness")
+        else:
+            components["robustness"] = robustness
+            available.append("robustness")
 
-        if calibration_ece and model in calibration_ece:
-            ece = float(calibration_ece[model])
+        ece = (
+            _normalise_reading("calibration", model, calibration_ece[model])
+            if calibration_ece and model in calibration_ece
+            else None
+        )
+        if ece is None:
+            components["calibration"] = None
+            missing.append("calibration")
+        else:
             # Score against the configured ece_cap via the shared transform, not
             # a hardcoded 1.0 — the reliability scorer uses the same cap, so the
             # two "calibration /100" figures shown to the user cannot disagree
@@ -310,9 +367,6 @@ class ModelComparator:
                 calibration_fraction(ece, ece_cap=self.weights.ece_cap) * 100.0
             )
             available.append("calibration")
-        else:
-            components["calibration"] = None
-            missing.append("calibration")
 
         return components, available, missing
 

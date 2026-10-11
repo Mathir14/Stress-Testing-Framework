@@ -21,6 +21,8 @@ The binding claims under test:
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 pytest.importorskip("numpy", reason="the comparator needs the scientific stack")
@@ -28,6 +30,7 @@ pytest.importorskip("pandas", reason="the comparator needs the scientific stack"
 pytest.importorskip("plotly", reason="the comparator's figures need the scientific stack")
 
 from core.config import ScoringPolicy, get_config
+from core.errors import ValidationError
 from modules.comparison_module import ModelComparator
 
 
@@ -314,14 +317,14 @@ def test_recommendation_reason_carries_the_measured_numbers(
 
 
 def test_nan_evidence_never_produces_a_non_finite_composite(comparator: ModelComparator):
-    """A ``NaN`` metric, robustness or ECE floors to zero, never ``NaN``.
+    """A ``NaN`` metric/reading never escapes into the published composite.
 
     ``NaN`` defeats both range comparisons, so before this the composite (and the
     grade derived from it) could be ``NaN`` for degenerate evidence — a silently
-    corrupt published score rather than a rendered error (run-015 review).
+    corrupt published score rather than a rendered error (run-015 review). The
+    performance component floors to ``0.0``; a non-finite robustness/ECE reading
+    is now *missing* rather than a floored component (ADR-027).
     """
-    import math
-
     assessment = comparator.rate_models(
         _metrics(accuracy=float("nan"), f1=float("nan")),
         {"M": float("nan")},
@@ -333,25 +336,97 @@ def test_nan_evidence_never_produces_a_non_finite_composite(comparator: ModelCom
         assert value is None or math.isfinite(value)
 
 
-def test_infinite_robustness_is_floored_not_a_full_credit_component(
-    comparator: ModelComparator,
-):
-    """``+inf`` robustness must floor to zero, not clamp to a perfect 100.
+@pytest.mark.parametrize("reading", [float("nan"), float("inf"), float("-inf")])
+def test_a_non_finite_robustness_reading_is_missing_not_a_component(reading: float):
+    """``nan``/``+inf``/``-inf`` robustness is not measured evidence.
 
-    ``min(max(+inf, 0.0), 100.0)`` is ``100.0`` — full credit for a measurement
-    that does not exist — while the neighbouring ``NaN`` branch scored zero, so
-    the two non-finite values disagreed.  Both infinities now take the same
-    no-credit floor as ``NaN`` (run-015 review m1).
+    Previously all three floored to a ``0.0`` component that still counted as
+    measured (``available``), while an absent entry was ``None``/``missing`` —
+    two classes for one state.  A non-finite reading is now ``None`` and lands in
+    ``missing_components``, never in ``available_components`` (ADR-027).
     """
-    import math
+    assessment = ModelComparator().rate_models(_metrics(), {"M": reading})["M"]
+    assert assessment["components"]["robustness"] is None
+    assert "robustness" in assessment["missing_components"]
+    assert "robustness" not in assessment["available_components"]
 
-    positive = comparator.rate_models(_metrics(), {"M": float("inf")})["M"]
-    assert positive["components"]["robustness"] == 0.0
-    assert math.isfinite(positive["composite"])
 
-    negative = comparator.rate_models(_metrics(), {"M": float("-inf")})["M"]
-    assert negative["components"]["robustness"] == 0.0
-    assert math.isfinite(negative["composite"])
+@pytest.mark.parametrize("reading", [float("nan"), float("inf"), float("-inf")])
+def test_a_non_finite_calibration_reading_is_missing_not_a_component(reading: float):
+    """A non-finite ECE is missing evidence, exactly like a non-finite robustness."""
+    assessment = ModelComparator().rate_models(_metrics(), None, {"M": reading})["M"]
+    assert assessment["components"]["calibration"] is None
+    assert "calibration" in assessment["missing_components"]
+    assert "calibration" not in assessment["available_components"]
+
+
+def test_a_non_finite_reading_does_not_count_toward_rated():
+    """A model padded to ``min_measured_components`` by a non-finite reading is unrated.
+
+    With the default metrics (performance only) and a non-finite robustness the
+    composite is the performance-only ``43.75``, ``rated`` is ``False`` and both
+    optional components are missing (ADR-027).
+    """
+    assessment = ModelComparator().rate_models(_metrics(), {"M": float("inf")})["M"]
+    assert assessment["composite"] == pytest.approx(43.75)
+    assert assessment["rated"] is False
+    assert assessment["missing_components"] == ["robustness", "calibration"]
+    assert assessment["available_components"] == ["performance"]
+
+
+@pytest.mark.parametrize("reading", [float("nan"), float("inf"), float("-inf")])
+def test_a_non_finite_reading_leaves_only_the_finite_sibling_measured(reading: float):
+    """A finite reading and a non-finite sibling leave exactly one available."""
+    assessment = ModelComparator().rate_models(
+        _metrics(), {"M": reading}, {"M": 0.1}
+    )["M"]
+    assert assessment["components"]["robustness"] is None
+    assert "robustness" in assessment["missing_components"]
+    assert "calibration" in assessment["available_components"]
+    assert assessment["rated"] is True  # performance + calibration
+
+
+@pytest.mark.parametrize("bad", ["oops", None, object(), True, False])
+def test_a_non_numeric_reading_raises_a_typed_validation_error(bad: object):
+    """A caller-supplied non-numeric reading raises typed ``ValidationError``.
+
+    ``bool`` is checked explicitly because it is a subclass of ``int`` and would
+    otherwise coerce to ``1.0`` silently; ``None`` *as a value* is caller misuse,
+    distinct from the model being absent from the dict (run-015 MIN-1, ADR-027).
+    """
+    for component, kwargs in (
+        ("robustness", {"robustness_dict": {"M": bad}}),
+        ("calibration", {"calibration_ece": {"M": bad}}),
+    ):
+        with pytest.raises(ValidationError) as excinfo:
+            ModelComparator().rate_models(_metrics(), **kwargs)
+        assert excinfo.value.context["model"] == "M"
+        assert excinfo.value.context["component"] == component
+
+
+def test_a_model_absent_from_a_reading_dict_stays_missing():
+    """A missing key is not a caller error: it stays a missing component.
+
+    Only a value supplied *for the model* is normalised; ``_normalise_reading``
+    must never be reached for an absent key (which would raise instead of
+    reporting the component as unmeasured).
+    """
+    assessment = ModelComparator().rate_models(
+        _metrics(), {"Other": 60.0}, {"Other": 0.1}
+    )["M"]
+    assert assessment["components"]["robustness"] is None
+    assert assessment["components"]["calibration"] is None
+    assert assessment["missing_components"] == ["robustness", "calibration"]
+
+
+def test_finite_readings_are_still_clamped_to_the_component_range():
+    """Finite readings still clamp to ``[0.0, 100.0]`` and count as measured."""
+    low = ModelComparator().rate_models(_metrics(), {"M": -5.0})["M"]
+    high = ModelComparator().rate_models(_metrics(), {"M": 250.0})["M"]
+    assert low["components"]["robustness"] == 0.0
+    assert "robustness" in low["available_components"]
+    assert high["components"]["robustness"] == 100.0
+    assert "robustness" in high["available_components"]
 
 
 def test_performance_component_uses_the_shared_transform(comparator: ModelComparator):

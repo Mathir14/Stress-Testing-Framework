@@ -963,6 +963,53 @@ rediscovering them, and `_peak_bytes`' minimum-of-three is what keeps the bound
 scale-invariant (2.134x / 2.129x / 2.126x at 20k / 40k / 200k rows) instead of
 being tuned to one allocation pattern.
 
+### 16. The comparison boundary leaked a raw exception and split "missing" from "non-finite"; both are now typed and gated
+
+ADR-008 requires a deviation to be documented. This is the run-016 remediation of
+the run-015 Critic's residual tail, and it **is** a behaviour change — recorded in
+architecture.md §9 item 26 and **ADR-027**, not absorbed silently.
+
+The Critic's **MIN-1** was that `modules/comparison_module.py` called
+`float(robustness_dict[model])` and `float(calibration_ece[model])` directly in
+`_component_scores`, so a non-numeric reading supplied by a caller of the public
+`ModelComparator.rate_models` raised a raw `ValueError`/`TypeError` across the
+boundary instead of a typed `FrameworkError` (conventions §3), and
+`views.reporters.render_errors` — which catches only `FrameworkError` — could not
+render it. The companion consistency finding was that a `nan`/`±inf` reading
+floored to a `0.0` component that **stayed** in `available_components`, while an
+absent entry was `None`/`missing_components`: two representations of "not
+measured".
+
+Both are now handled by one private `_normalise_reading(component, model, raw)`
+helper. A `bool` or any non-float-coercible value (including a `None` value *inside*
+the dict) raises a typed `ValidationError` carrying `component` and `model` in its
+`context`; a numeric but non-finite reading becomes `None`/missing and does not
+count toward `rated`. `_component_scores` contains no bare `float()` coercion of a
+reading and routes both optional readings through the helper, so the two
+components cannot drift apart again — the failure that produced the original
+inconsistency.
+
+**Deliberately not reconciled.** ADR-018's `{reliability}` path still floors a
+`NaN` drop to an *available* `0.0` component, because that behaviour is frozen
+bit-exactly by `tests/fixtures/reliability_baseline.json` and reconciling it in
+the frozen direction would change published scores. The `{comparison}` path has no
+such freeze, so it takes the stricter reading. The split is recorded in ADR-027
+rather than collapsed.
+
+**Verified, not asserted.** `tests/test_comparison.py` pins the missing-not-floored
+contract for `nan`/`+inf`/`-inf` robustness **and** calibration, the `rated` flip,
+the finite-clamp unchanged case, and the typed `ValidationError` for
+`str`/`None`/object/`bool` readings. `tests/test_architecture.py` adds a T0 `ast`
+gate that the helper is defined exactly once, that `_component_scores` has no
+bare `float()` and routes both readings, plus a falsification control proving the
+gate fails on a bypass. `python -m tests.capture_baseline --check` confirms the
+reliability parity fixture is byte-identical.
+
+**Carried, not fixed** (backlog item 11): the two pre-existing `mypy` errors
+around the `rate_models` generator (`float | None` narrowing) remain. `mypy` is a
+non-gating developer aid; the helper rewrite here does not address them, and doing
+so belongs to the backlog item's larger rewrite.
+
 ---
 
 ## Post-milestone backlog (not in run-003)

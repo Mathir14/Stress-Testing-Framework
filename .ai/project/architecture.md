@@ -1148,6 +1148,23 @@ above.
     turns a previously-uncaught `FrameworkError` into a rendered one — an
     error-boundary fix of the class item 17 records, with no change to a
     successful comparison's output.
+26. **Non-numeric comparison readings raise a typed error; a non-finite reading is
+    missing** (ADR-027, run-015 MIN-1). `ModelComparator.rate_models` no longer
+    calls bare `float()` on the caller-supplied `robustness_dict` /
+    `calibration_ece` readings. A non-numeric value (`str`, a custom object, or a
+    `None` **value** inside the dict) or a `bool` raises a typed `ValidationError`
+    naming the component and the model in its message and `context`, instead of
+    leaking a raw `ValueError`/`TypeError` across the public boundary
+    (conventions §3). A **numeric but non-finite** reading (`nan`, `inf`, `-inf`)
+    is routed to `None`/`missing_components` and does not count toward
+    `available_components`/`rated`, so "not measured" and "measured as
+    non-finite" are one class at this boundary (ADR-018). The reliability
+    scorer's `nan_drop` behaviour (a floored `0.0` component that stays
+    *available*) is **frozen** by the parity fixture and is deliberately **not**
+    reconciled with this stricter comparison-path reading; the two paths diverge
+    by intent and the split is recorded in ADR-027. The only observable
+    consequence is a `rated` flip for a model whose sole second "measured"
+    component was a non-finite reading — unreachable from the shipped UI.
 
 Measured today, for reference — the defects items 1–11 remove: `int64 + float64`
 frames silently no-op in 5 of 6 operators; `int64` ndarrays silently truncate;

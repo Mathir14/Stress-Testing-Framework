@@ -3241,3 +3241,197 @@ def test_the_annotation_sweep_could_still_fail() -> None:
         "offenders, must not flag a self-only method, and must not descend into "
         "a nested closure (ADR-011.5)"
     )
+
+
+# ── ADR-027: one normaliser at the comparison reading boundary ─────────────────
+
+#: The module owning the boundary.  Named (not derived) because the gate is about
+#: *this* module's structure; a rename there is a deliberate architecture move.
+COMPARISON_MODULE: Path = ROOT / "modules" / "comparison_module.py"
+
+#: The optional reading dicts ``ModelComparator._component_scores`` must normalise,
+#: identified by the component label each passes to ``_normalise_reading``.
+_COMPARISON_READING_COMPONENTS: frozenset[str] = frozenset(
+    {"robustness", "calibration"}
+)
+
+#: The one private helper that owns reading normalisation (run-015 MIN-1,
+#: ADR-027).  Both optional readings route through it so a non-numeric reading
+#: raises a typed ``ValidationError`` and a numeric-but-non-finite reading becomes
+#: *missing* rather than a floored zero that still counts as measured.
+_COMPARISON_NORMALISER: str = "_normalise_reading"
+
+
+def _named_defs(tree: ast.Module, name: str) -> list[ast.FunctionDef]:
+    """Return every ``def <name>`` in ``tree``, module level or class level.
+
+    Args:
+        tree: A parsed module.
+        name: The function name to collect.
+
+    Returns:
+        list[ast.FunctionDef]: Matching definitions, in walk order.
+    """
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == name
+    ]
+
+
+def _bare_float_calls(node: ast.AST) -> list[int]:
+    """Line numbers of any ``float(...)`` call reachable from ``node``.
+
+    ``_normalise_reading`` already calls ``float`` once; the gate is about a
+    **second** coercion happening in ``_component_scores`` and bypassing the
+    helper, so it scans that function's subtree only.
+
+    Args:
+        node: The function body to scan.
+
+    Returns:
+        list[int]: Ascending line numbers of bare ``float()`` calls.
+    """
+    lines: list[int] = []
+    for child in ast.walk(node):
+        if (
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Name)
+            and child.func.id == "float"
+        ):
+            lines.append(child.lineno)
+    return sorted(lines)
+
+
+def _normaliser_component_args(node: ast.AST) -> set[str]:
+    """Component labels passed as the first argument to the normaliser.
+
+    Args:
+        node: The function body to scan.
+
+    Returns:
+        set[str]: The string-literal first arguments, e.g. ``{"robustness"}``.
+    """
+    found: set[str] = set()
+    for child in ast.walk(node):
+        if (
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Name)
+            and child.func.id == _COMPARISON_NORMALISER
+            and child.args
+            and isinstance(child.args[0], ast.Constant)
+            and isinstance(child.args[0].value, str)
+        ):
+            found.add(child.args[0].value)
+    return found
+
+
+def test_comparison_readings_flow_through_the_single_normaliser() -> None:
+    """ADR-027: one normaliser, and ``_component_scores`` has no bare ``float()``.
+
+    Run-015 MIN-1: ``_component_scores`` called ``float()`` directly on the
+    caller-supplied robustness and calibration readings, so a non-numeric value
+    raised a raw ``ValueError``/``TypeError`` across the **public**
+    ``ModelComparator.rate_models`` boundary — which conventions §3 forbids.  The
+    two conversions had also drifted: a non-finite reading floored to ``0.0`` and
+    stayed *available*, while an absent entry was ``None``/missing.
+
+    This gate keeps the two fixes from regressing **together**: the helper must
+    exist exactly once, ``_component_scores`` must contain no bare ``float()``
+    coercion, and both optional readings must be routed through the helper.
+
+    Returns:
+        None.
+    """
+    assert COMPARISON_MODULE.is_file(), f"missing {COMPARISON_MODULE}"
+    tree = _parse(COMPARISON_MODULE)
+
+    definitions = _named_defs(tree, _COMPARISON_NORMALISER)
+    assert len(definitions) == 1, (
+        f"{_COMPARISON_NORMALISER} must be defined exactly once; found "
+        f"{len(definitions)} at lines {[d.lineno for d in definitions]} — a "
+        "second copy is a divergence path (ADR-027)"
+    )
+
+    component_scores = _named_defs(tree, "_component_scores")
+    assert len(component_scores) == 1, (
+        f"_component_scores must be defined exactly once; found "
+        f"{len(component_scores)} (ADR-027)"
+    )
+    body = component_scores[0]
+
+    bare = _bare_float_calls(body)
+    assert not bare, (
+        "modules/comparison_module.py:_component_scores coerces a reading with a "
+        f"bare float() at line(s) {bare}; route it through {_COMPARISON_NORMALISER} "
+        "so a non-numeric reading raises a typed ValidationError and a non-finite "
+        "reading is missing, not a floored component (ADR-027)"
+    )
+
+    unrouted = _COMPARISON_READING_COMPONENTS - _normaliser_component_args(body)
+    assert not unrouted, (
+        f"_component_scores does not route {sorted(unrouted)} through "
+        f"{_COMPARISON_NORMALISER}; both optional readings must share the one "
+        "translation point (ADR-027)"
+    )
+
+
+def test_the_comparison_normaliser_gate_would_catch_a_bypass() -> None:
+    """Falsify :func:`test_comparison_readings_flow_through_the_single_normaliser`.
+
+    A gate that reports nothing is indistinguishable from one that passes for the
+    wrong reason (ADR-010).  This asserts each detection mechanism fires on the
+    bypass it exists to catch — a bare ``float()`` coercion, an unrouted reading,
+    a duplicated helper — and, just as importantly, that the compliant spelling
+    passes.
+
+    Returns:
+        None.
+    """
+    bypass = ast.parse(
+        "class C:\n"
+        "    def _component_scores(self, model, vals, robustness_dict, calibration_ece):\n"
+        "        robustness = float(robustness_dict[model])\n"
+        "        return robustness\n"
+    )
+    bypass_body = _named_defs(bypass, "_component_scores")[0]
+    assert _bare_float_calls(bypass_body), (
+        "the gate did not flag a bare float() coercion of a reading"
+    )
+    assert not _normaliser_component_args(bypass_body), (
+        "the gate thought a bare float() was a normaliser call"
+    )
+
+    compliant = ast.parse(
+        "class C:\n"
+        "    def _component_scores(self, model, vals, robustness_dict, calibration_ece):\n"
+        "        r = _normalise_reading('robustness', model, robustness_dict[model])\n"
+        "        e = _normalise_reading('calibration', model, calibration_ece[model])\n"
+        "        return r, e\n"
+    )
+    compliant_body = _named_defs(compliant, "_component_scores")[0]
+    assert not _bare_float_calls(compliant_body), (
+        "the gate flagged the compliant routings as bare float() calls"
+    )
+    assert _normaliser_component_args(compliant_body) == _COMPARISON_READING_COMPONENTS
+
+    partial = ast.parse(
+        "class C:\n"
+        "    def _component_scores(self, model, vals, robustness_dict, calibration_ece):\n"
+        "        r = _normalise_reading('robustness', model, robustness_dict[model])\n"
+        "        return r\n"
+    )
+    partial_body = _named_defs(partial, "_component_scores")[0]
+    assert _COMPARISON_READING_COMPONENTS - _normaliser_component_args(partial_body) == {
+        "calibration"
+    }, "the gate did not notice a reading that bypassed the normaliser"
+
+    duplicated = ast.parse(
+        "def _normalise_reading(component, model, raw):\n"
+        "    return None\n"
+        "def _normalise_reading(component, model, raw):\n"
+        "    return None\n"
+    )
+    assert len(_named_defs(duplicated, _COMPARISON_NORMALISER)) == 2, (
+        "the definition count did not see the duplicate helper"
+    )
