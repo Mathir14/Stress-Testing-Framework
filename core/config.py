@@ -336,6 +336,16 @@ class ScoringPolicy:
             to a percentage performance drop.
         quality_fallthrough: Label when an ECE exceeds every band.
         severity_fallthrough: Label when a drop exceeds every band.
+        recommendation_bands: Descending ``(lower_bound, label)`` pairs applied
+            to an overall robustness score.
+        recommendation_fallthrough: Label when a score is below every band.
+        key_vulnerability_drop_threshold: Performance drop percentage threshold
+            for flagging key vulnerabilities.
+        robustness_bands: Ascending ``(strict_upper_bound, label)`` pairs applied
+            to category average drop percentage.
+        robustness_fallthrough: Label when an average drop exceeds every band.
+        low_prediction_stability_threshold: Minimum prediction agreement
+            before flagging low prediction stability.
     """
 
     composite_weights: tuple[tuple[str, float], ...] = (
@@ -357,6 +367,19 @@ class ScoringPolicy:
     )
     quality_fallthrough: str = "Poor"
     severity_fallthrough: str = "Critical"
+    recommendation_bands: tuple[tuple[float, str], ...] = (
+        (80.0, "Excellent"),
+        (60.0, "Good"),
+        (40.0, "Moderate"),
+    )
+    recommendation_fallthrough: str = "Low"
+    key_vulnerability_drop_threshold: float = 20.0
+    robustness_bands: tuple[tuple[float, str], ...] = (
+        (10.0, "High"),
+        (20.0, "Medium"),
+    )
+    robustness_fallthrough: str = "Low"
+    low_prediction_stability_threshold: float = 0.8
 
     def resolve_ece_quality(self, ece: float) -> str:
         """Classify an expected-calibration-error value.
@@ -389,6 +412,38 @@ class ScoringPolicy:
             if value < threshold:
                 return label
         return self.severity_fallthrough
+
+    def resolve_recommendation(self, score: float) -> str:
+        """Classify an overall robustness score into a recommendation band.
+
+        Args:
+            score: Robustness score on the 0-100 scale (higher is better).
+
+        Returns:
+            str: The first band label whose lower bound the value meets or
+            exceeds, else :attr:`recommendation_fallthrough`.
+        """
+        value = float(score)
+        for threshold, label in self.recommendation_bands:
+            if value >= threshold:
+                return label
+        return self.recommendation_fallthrough
+
+    def resolve_robustness(self, avg_drop: float) -> str:
+        """Classify an average performance drop into a summary robustness level.
+
+        Args:
+            avg_drop: Average performance drop as a percentage (lower is better).
+
+        Returns:
+            str: The first band label whose strict upper bound the value is
+            below, else :attr:`robustness_fallthrough`.
+        """
+        value = float(avg_drop)
+        for threshold, label in self.robustness_bands:
+            if value < threshold:
+                return label
+        return self.robustness_fallthrough
 
     def weight_for(self, component: str) -> float:
         """Return the composite weight for ``component`` (0.0 when absent).
@@ -486,13 +541,81 @@ class ScoringPolicy:
 
         self._validate_ascending_bands("ece_quality", positive_only=True)
         self._validate_ascending_bands("severity_bands", positive_only=True)
-        for label_field in ("quality_fallthrough", "severity_fallthrough"):
+        self._validate_ascending_bands("robustness_bands", positive_only=True)
+        self._validate_descending_bands("recommendation_bands")
+        for num_field, min_val, max_val in (
+            ("key_vulnerability_drop_threshold", 0.0, None),
+            ("low_prediction_stability_threshold", 0.0, 1.0),
+        ):
+            val = getattr(self, num_field)
+            if isinstance(val, bool) or not isinstance(val, (int, float)):
+                raise ConfigurationError(
+                    f"ScoringPolicy.{num_field} must be a number, got {val!r}.",
+                    context={"field": num_field, "value": val},
+                )
+            fval = float(val)
+            if fval < min_val or (max_val is not None and fval > max_val):
+                raise ConfigurationError(
+                    f"ScoringPolicy.{num_field} must fall in [{min_val}, {max_val}], got {fval}.",
+                    context={"field": num_field, "value": fval},
+                )
+        for label_field in (
+            "quality_fallthrough",
+            "severity_fallthrough",
+            "recommendation_fallthrough",
+            "robustness_fallthrough",
+        ):
             label = getattr(self, label_field)
             if not isinstance(label, str) or not label:
                 raise ConfigurationError(
                     f"ScoringPolicy.{label_field} must be a non-empty string, "
                     f"got {label!r}.",
                     context={"field": label_field, "value": label},
+                )
+
+    def _validate_descending_bands(self, attr: str) -> None:
+        from core.errors import ConfigurationError
+
+        bands = getattr(self, attr)
+        if not isinstance(bands, tuple) or len(bands) == 0:
+            raise ConfigurationError(
+                f"ScoringPolicy.{attr} must be a non-empty tuple of "
+                "(threshold, label) pairs.",
+                context={"field": attr, "expected": "non-empty tuple"},
+            )
+        previous = float("inf")
+        for row in bands:
+            if not isinstance(row, tuple) or len(row) != 2:
+                raise ConfigurationError(
+                    f"ScoringPolicy.{attr} entries must be (threshold, label) pairs, "
+                    f"got {row!r}.",
+                    context={"field": attr, "expected": "tuple of 2 items"},
+                )
+            threshold, label = row
+            if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
+                raise ConfigurationError(
+                    f"ScoringPolicy.{attr} thresholds must be numbers, got {threshold!r}.",
+                    context={"field": attr, "value": threshold},
+                )
+            threshold = float(threshold)
+            if not (0.0 <= threshold <= 100.0):
+                raise ConfigurationError(
+                    f"ScoringPolicy.{attr} thresholds must fall in [0, 100], "
+                    f"got {threshold}.",
+                    context={"field": attr, "value": threshold},
+                )
+            if threshold >= previous:
+                raise ConfigurationError(
+                    f"ScoringPolicy.{attr} thresholds must be strictly descending (highest first), "
+                    f"got {threshold} after {previous}.",
+                    context={"field": attr, "value": threshold},
+                )
+            previous = threshold
+            if not isinstance(label, str) or not label:
+                raise ConfigurationError(
+                    f"ScoringPolicy.{attr} labels must be non-empty strings, "
+                    f"got {label!r}.",
+                    context={"field": attr, "value": label},
                 )
 
     def _validate_ascending_bands(self, attr: str, *, positive_only: bool) -> None:

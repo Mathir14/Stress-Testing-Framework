@@ -849,3 +849,17 @@ def test_artifact_record_round_trips_through_dict():
         library_versions={"scikit-learn": "1.8.0"},
     )
     assert ArtifactRecord.from_dict(record.to_dict()) == record
+
+
+def test_artifact_record_default_library_versions_is_empty_dict():
+    """ADR-035 (m-4): library_versions defaults to an empty dict via default factory."""
+    record = ArtifactRecord(
+        name="model.pkl",
+        path=Path("/tmp/model.pkl"),
+        sha256="a" * 64,
+        size_bytes=17,
+        created_at="2026-01-01T00:00:00+00:00",
+        model_name="Fake",
+    )
+    assert record.library_versions == {}
+    assert record.to_dict()["library_versions"] == {}

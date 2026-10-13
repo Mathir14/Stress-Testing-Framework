@@ -113,3 +113,42 @@ def test_load_surfaces_a_non_framework_reporter_defect():
     trainer = _trainer(reporter)
     with pytest.raises(RuntimeError):
         trainer.load_model("Logistic Regression", "m.pkl")
+
+
+# ── ADR-035 (m-2) predict error typing ────────────────────────────────────────
+
+
+def test_predict_distinguishes_untrained_from_prediction_failures():
+    """ADR-035: untrained raises ModelNotTrainedError, inference failure raises ModelPredictionError."""
+    import pandas as pd
+    from core.errors import ModelNotTrainedError, ModelPredictionError
+
+    trainer = ModelTrainer()
+
+    # 1. Model not in trained_models -> ModelNotTrainedError
+    with pytest.raises(ModelNotTrainedError):
+        trainer.predict("Logistic Regression", pd.DataFrame([[1, 2]]))
+
+    # 2. Estimator failing predict() -> ModelPredictionError
+    class _BrokenPredictEstimator:
+        def predict(self, _x):
+            raise ValueError("bad shape")
+
+        def predict_proba(self, _x):
+            return [[0.5, 0.5]]
+
+    trainer.trained_models["Broken"] = _BrokenPredictEstimator()
+    with pytest.raises(ModelPredictionError, match="cannot predict"):
+        trainer.predict("Broken", pd.DataFrame([[1, 2]]))
+
+    # 3. Estimator failing predict_proba() -> ModelPredictionError
+    class _BrokenProbaEstimator:
+        def predict(self, _x):
+            return [1]
+
+        def predict_proba(self, _x):
+            raise AttributeError("predict_proba not supported")
+
+    trainer.trained_models["NoProba"] = _BrokenProbaEstimator()
+    with pytest.raises(ModelPredictionError, match="cannot produce probabilities"):
+        trainer.predict("NoProba", pd.DataFrame([[1, 2]]))

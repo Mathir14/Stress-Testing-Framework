@@ -274,3 +274,41 @@ def test_robustness_score_clamps_a_negative_drop_to_a_perfect_score() -> None:
 def test_robustness_score_is_none_when_drop_unmeasured() -> None:
     item = ModelEvidence("m", 1.0, 1.0, 0.0, None, None, None, 2)
     assert item.robustness_score(drop_cap=0.5) is None
+
+
+# ── ADR-035 (m-6) distinguishing error logging ────────────────────────────────
+
+
+def test_predict_logging_distinguishes_causes(caplog: pytest.LogCaptureFixture) -> None:
+    """ADR-035: _predict logs cause-distinguishing messages for failures."""
+    import logging
+    from core.errors import ModelNotTrainedError, ModelPredictionError
+    from modules.evidence_module import _predict
+
+    class _TrainerStub:
+        def __init__(self, exc: Exception) -> None:
+            self.exc = exc
+
+        def predict(self, _name: str, _x: object) -> tuple:
+            raise self.exc
+
+    # 1. Benign untrained model -> INFO log
+    with caplog.at_level(logging.INFO):
+        caplog.clear()
+        res = _predict(_TrainerStub(ModelNotTrainedError("not trained")), "untrained", None)
+        assert res is None
+        assert any(r.levelno == logging.INFO and "not been trained yet" in r.message for r in caplog.records)
+
+    # 2. Fitted estimator prediction error -> WARNING log
+    with caplog.at_level(logging.INFO):
+        caplog.clear()
+        res = _predict(_TrainerStub(ModelPredictionError("bad shape")), "broken", None)
+        assert res is None
+        assert any(r.levelno == logging.WARNING and "Prediction failed" in r.message for r in caplog.records)
+
+    # 3. Unexpected exception -> ERROR log (logger.exception)
+    with caplog.at_level(logging.INFO):
+        caplog.clear()
+        res = _predict(_TrainerStub(RuntimeError("crash")), "crashed", None)
+        assert res is None
+        assert any(r.levelno == logging.ERROR and "Unexpected error while predicting" in r.message for r in caplog.records)

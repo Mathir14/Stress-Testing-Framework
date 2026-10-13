@@ -475,10 +475,10 @@ class ReliabilityScorer:
                     "Total": f"{sd['total']:.1f}",
                     "Grade": sd["grade"],
                     "Rated": "Yes" if sd.get("rated", True) else "No",
-                    "Performance": f"{sd['performance']:.1f} / 25",
-                    "Calibration": f"{sd['calibration']:.1f} / 25",
-                    "Robustness": f"{sd['robustness']:.1f} / 25",
-                    "Confidence": f"{sd['confidence']:.1f} / 25",
+                    "Performance": f"{sd['performance']:.1f} / {self.MAX_PERF:g}",
+                    "Calibration": f"{sd['calibration']:.1f} / {self.MAX_CAL:g}",
+                    "Robustness": f"{sd['robustness']:.1f} / {self.MAX_ROB:g}",
+                    "Confidence": f"{sd['confidence']:.1f} / {self.MAX_CONF:g}",
                     "Missing Data": (
                         ", ".join(sd["missing_components"])
                         if sd["missing_components"]

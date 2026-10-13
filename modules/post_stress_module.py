@@ -5,7 +5,7 @@ Deep analysis of stress test results to assess model robustness
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 import numpy as np
 import pandas as pd
@@ -13,6 +13,15 @@ import plotly.graph_objects as go
 
 from core.config import ScoringPolicy, get_config
 from core.errors import ValidationError
+
+#: Mandatory fields for an ingested stress result (ADR-035, m-1).
+REQUIRED_STRESS_RESULT_KEYS: tuple[str, ...] = (
+    "accuracy_original",
+    "accuracy_stressed",
+    "performance_drop",
+    "performance_drop_pct",
+    "prediction_agreement",
+)
 
 
 class PostStressAnalyzer:
@@ -36,6 +45,18 @@ class PostStressAnalyzer:
             result: Dictionary containing test metrics
             model_name: Name of the model tested
         """
+        if not isinstance(result, Mapping):
+            raise ValidationError(
+                f"Stress result for {test_name!r} must be a mapping, got {type(result).__name__}.",
+                context={"test_name": test_name, "value": result},
+            )
+        missing_keys = [k for k in REQUIRED_STRESS_RESULT_KEYS if k not in result]
+        if missing_keys:
+            raise ValidationError(
+                f"Stress result for {test_name!r} is missing required keys: {', '.join(missing_keys)}.",
+                context={"test_name": test_name, "missing_keys": missing_keys},
+            )
+
         if model_name not in self.stress_results:
             self.stress_results[model_name] = {}
 
@@ -264,10 +285,8 @@ class PostStressAnalyzer:
                         "Avg Drop (%)": np.mean(drops),
                         "Max Drop (%)": np.max(drops),
                         "Avg Agreement": np.mean(agreements),
-                        "Robustness": (
-                            "High"
-                            if np.mean(drops) < 10
-                            else "Medium" if np.mean(drops) < 20 else "Low"
+                        "Robustness": self.policy.resolve_robustness(
+                            float(np.mean(drops))
                         ),
                     }
                 )
@@ -455,29 +474,24 @@ class PostStressAnalyzer:
         score = self.calculate_robustness_score(model_name)
 
         # Overall robustness assessment
-        if score >= 80:
-            recommendations.append(
-                f"✅ **Excellent robustness** (score: {score:.1f}/100). Model performs well under stress."
-            )
-        elif score >= 60:
-            recommendations.append(
-                f"⚠️ **Good robustness** (score: {score:.1f}/100). Some improvements possible."
-            )
-        elif score >= 40:
-            recommendations.append(
-                f"⚠️ **Moderate robustness** (score: {score:.1f}/100). Consider improvements."
-            )
-        else:
-            recommendations.append(
-                f"❌ **Low robustness** (score: {score:.1f}/100). Significant improvements needed."
-            )
+        level = self.policy.resolve_recommendation(score)
+        _rec_notes = {
+            "Excellent": ("✅", "Model performs well under stress."),
+            "Good": ("⚠️", "Some improvements possible."),
+            "Moderate": ("⚠️", "Consider improvements."),
+            "Low": ("❌", "Significant improvements needed."),
+        }
+        emoji, note = _rec_notes.get(level, ("⚠️", "Review model performance."))
+        recommendations.append(
+            f"{emoji} **{level} robustness** (score: {score:.1f}/100). {note}"
+        )
 
         # Identify worst performing tests
         worst_tests = vuln_df.head(3)
 
         recommendations.append("\n**Key Vulnerabilities:**")
         for _, row in worst_tests.iterrows():
-            if row["Performance Drop (%)"] > 20:
+            if row["Performance Drop (%)"] > self.policy.key_vulnerability_drop_threshold:
                 recommendations.append(
                     f"- **{row['Stress Test']}**: {row['Performance Drop (%)']:.1f}% drop ({row['Severity']} severity)"
                 )
@@ -539,7 +553,7 @@ class PostStressAnalyzer:
             ]
         )
 
-        if avg_agreement < 0.8:
+        if avg_agreement < self.policy.low_prediction_stability_threshold:
             recommendations.append(
                 f"\n- **Low prediction stability** ({avg_agreement:.1%} agreement). Model predictions are inconsistent under stress."
             )

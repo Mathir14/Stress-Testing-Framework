@@ -482,3 +482,77 @@ def test_config_declares_exactly_two_env_variables():
         and node.value.startswith("STF_")
     }
     assert found == {ENV_LOG_LEVEL, ENV_RANDOM_SEED}
+
+
+# ── ADR-034 ScoringPolicy recommendation and robustness bands ─────────────────
+
+
+def test_scoring_policy_resolve_recommendation_at_defaults():
+    """ADR-034: resolve_recommendation matches the 80/60/40/Low scale at defaults."""
+    from core.config import ScoringPolicy
+
+    policy = ScoringPolicy()
+    assert policy.resolve_recommendation(95.0) == "Excellent"
+    assert policy.resolve_recommendation(80.0) == "Excellent"
+    assert policy.resolve_recommendation(79.9) == "Good"
+    assert policy.resolve_recommendation(60.0) == "Good"
+    assert policy.resolve_recommendation(59.9) == "Moderate"
+    assert policy.resolve_recommendation(40.0) == "Moderate"
+    assert policy.resolve_recommendation(39.9) == "Low"
+    assert policy.resolve_recommendation(0.0) == "Low"
+
+
+def test_scoring_policy_resolve_robustness_at_defaults():
+    """ADR-034: resolve_robustness matches the <10/<20/Low scale at defaults."""
+    from core.config import ScoringPolicy
+
+    policy = ScoringPolicy()
+    assert policy.resolve_robustness(5.0) == "High"
+    assert policy.resolve_robustness(9.99) == "High"
+    assert policy.resolve_robustness(10.0) == "Medium"
+    assert policy.resolve_robustness(19.99) == "Medium"
+    assert policy.resolve_robustness(20.0) == "Low"
+    assert policy.resolve_robustness(50.0) == "Low"
+
+
+def test_scoring_policy_rejects_invalid_recommendation_bands():
+    """ADR-034: recommendation bands must be non-empty and strictly descending."""
+    from core.config import ScoringPolicy
+    from core.errors import ConfigurationError
+
+    with pytest.raises(ConfigurationError, match="recommendation_bands"):
+        ScoringPolicy(recommendation_bands=())
+
+    with pytest.raises(ConfigurationError, match="strictly descending"):
+        ScoringPolicy(recommendation_bands=((60.0, "Good"), (80.0, "Excellent")))
+
+    with pytest.raises(ConfigurationError, match="non-empty string"):
+        ScoringPolicy(recommendation_fallthrough="")
+
+
+def test_scoring_policy_rejects_invalid_robustness_bands():
+    """ADR-034: robustness bands must be strictly ascending."""
+    from core.config import ScoringPolicy
+    from core.errors import ConfigurationError
+
+    with pytest.raises(ConfigurationError, match="robustness_bands"):
+        ScoringPolicy(robustness_bands=())
+
+    with pytest.raises(ConfigurationError, match="strictly ascending"):
+        ScoringPolicy(robustness_bands=((20.0, "Medium"), (10.0, "High")))
+
+    with pytest.raises(ConfigurationError, match="non-empty string"):
+        ScoringPolicy(robustness_fallthrough="")
+
+
+def test_scoring_policy_rejects_invalid_thresholds():
+    """ADR-034: vulnerability and stability thresholds must be bounded numbers."""
+    from core.config import ScoringPolicy
+    from core.errors import ConfigurationError
+
+    with pytest.raises(ConfigurationError, match="key_vulnerability_drop_threshold"):
+        ScoringPolicy(key_vulnerability_drop_threshold=-1.0)
+
+    with pytest.raises(ConfigurationError, match="low_prediction_stability_threshold"):
+        ScoringPolicy(low_prediction_stability_threshold=1.5)
+

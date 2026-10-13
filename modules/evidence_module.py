@@ -26,6 +26,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
+from core.errors import FrameworkError, ModelNotTrainedError, ModelPredictionError
 from core.scoring import mean_performance_drop, robustness_fraction
 from utils.metrics import get_prediction_entropy, identify_high_confidence_errors
 
@@ -113,10 +114,26 @@ def _predict(
     """Return ``(predictions, probabilities)`` or ``None`` if prediction fails."""
     try:
         return trainer.predict(model_name, X_test)
-    except Exception as exc:  # noqa: BLE001 - evidence gathering must not abort
+    except ModelNotTrainedError as exc:
+        logger.info(
+            "Model %r has not been trained yet; skipping evidence gathering: %s",
+            model_name,
+            exc,
+        )
+        return None
+    except (ModelPredictionError, FrameworkError) as exc:
         logger.warning(
-            "Predictions unavailable for model %r; its calibration and confidence "
+            "Prediction failed for model %r (%s); its calibration and confidence "
             "evidence will be treated as missing. Cause: %s",
+            model_name,
+            type(exc).__name__,
+            exc,
+        )
+        return None
+    except Exception as exc:  # noqa: BLE001 - evidence gathering must not abort
+        logger.exception(
+            "Unexpected error while predicting for model %r; calibration and confidence "
+            "evidence will be treated as missing: %s",
             model_name,
             exc,
         )

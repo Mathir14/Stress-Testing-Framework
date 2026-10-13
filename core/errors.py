@@ -30,6 +30,7 @@ __all__ = [
     "ArtifactUntrustedError",
     "UnknownModelError",
     "ModelNotTrainedError",
+    "ModelPredictionError",
     "ReportExportError",
 ]
 
@@ -136,6 +137,10 @@ class UnknownModelError(FrameworkError):
 
 class ModelNotTrainedError(FrameworkError):
     """An operation needs a trained estimator that has not been fitted yet."""
+
+
+class ModelPredictionError(FrameworkError):
+    """A fitted estimator failed during prediction or probability estimation."""
 
 
 class ReportExportError(FrameworkError):

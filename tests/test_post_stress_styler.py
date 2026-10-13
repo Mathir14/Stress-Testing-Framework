@@ -350,3 +350,55 @@ def test_csv_export_of_the_table_is_unescaped(vulnerability: pd.DataFrame):
 def test_pandas_version_is_the_one_adr_011_9_was_verified_on():
     """Guard on the premise, as in ``test_data_preprocessing.py``."""
     assert pd.__version__ == "2.3.3", f"ADR-011.9 verified on pandas 2.3.3, found {pd.__version__}"
+
+
+# ── ADR-034 / ADR-035 schema validation and policy tests ──────────────────────
+
+
+def test_add_stress_result_rejects_malformed_inputs():
+    """ADR-035 (m-1): add_stress_result validates required keys at ingestion."""
+    from core.errors import ValidationError
+
+    analyzer = PostStressAnalyzer()
+
+    with pytest.raises(ValidationError, match="must be a mapping"):
+        analyzer.add_stress_result("bad", [1, 2, 3])  # type: ignore[arg-type]
+
+    partial = {
+        "accuracy_original": 0.9,
+        "accuracy_stressed": 0.8,
+        # missing performance_drop, performance_drop_pct, prediction_agreement
+    }
+    with pytest.raises(ValidationError, match="missing required keys") as exc_info:
+        analyzer.add_stress_result("partial", partial)
+    assert "performance_drop" in str(exc_info.value)
+    assert "prediction_agreement" in str(exc_info.value)
+
+
+def test_post_stress_analyzer_honours_injected_scoring_policy():
+    """ADR-034 (m-3): recommendations and summary bands follow injected policy."""
+    from core.config import ScoringPolicy
+
+    custom_policy = ScoringPolicy(
+        recommendation_bands=((90.0, "Top"), (50.0, "Mid")),
+        recommendation_fallthrough="Bottom",
+        robustness_bands=((15.0, "Strong"),),
+        robustness_fallthrough="Fragile",
+        low_prediction_stability_threshold=0.99,
+        key_vulnerability_drop_threshold=5.0,
+    )
+    analyzer = PostStressAnalyzer(policy=custom_policy)
+    analyzer.add_batch_results(_stress_results(), "CustomModel")
+
+    recs = analyzer.get_recommendations("CustomModel")
+    # Score for _stress_results is ~82.2 -> should be "Mid", not default "Excellent"
+    assert any("Mid robustness" in r for r in recs)
+    # 0.99 stability threshold flags the ~0.84 average agreement
+    assert any("Low prediction stability" in r for r in recs)
+
+    summary = analyzer.get_stress_type_summary("CustomModel")
+    # Average drop in Gaussian noise is ~5.7% < 15.0% -> "Strong" instead of default "High"
+    noise_row = summary[summary["Category"] == "Noise"]
+    assert not noise_row.empty
+    assert noise_row.iloc[0]["Robustness"] == "Strong"
+

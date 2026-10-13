@@ -26,7 +26,12 @@ from sklearn.metrics import (
 from xgboost import XGBClassifier
 
 from core.config import get_config
-from core.errors import FrameworkError, ModelNotTrainedError, UnknownModelError
+from core.errors import (
+    FrameworkError,
+    ModelNotTrainedError,
+    ModelPredictionError,
+    UnknownModelError,
+)
 from core.model_io import ArtifactRecord, ModelArtifactStore
 
 logger = logging.getLogger(__name__)
@@ -133,7 +138,7 @@ class ModelTrainer:
         try:
             predictions = model.predict(X)
         except Exception as exc:  # pragma: no cover - sklearn errors are domain-bound
-            raise ModelNotTrainedError(
+            raise ModelPredictionError(
                 f"Model {model_name!r} cannot predict; ensure it was fitted "
                 "on the same feature shape.",
                 context={"model_name": model_name},
@@ -141,7 +146,7 @@ class ModelTrainer:
         try:
             probabilities = model.predict_proba(X)
         except Exception as exc:  # pragma: no cover - sklearn errors are domain-bound
-            raise ModelNotTrainedError(
+            raise ModelPredictionError(
                 f"Model {model_name!r} cannot produce probabilities; check that "
                 "the estimator supports predict_proba.",
                 context={"model_name": model_name},

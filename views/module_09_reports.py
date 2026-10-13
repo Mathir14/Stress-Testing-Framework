@@ -5,7 +5,9 @@ import logging
 import pandas as pd
 import streamlit as st
 
+from core.errors import FrameworkError
 from core.state import AppContext, StateKeys
+from views.reporters import render_error
 from modules.calibration_module import CalibrationAnalyzer
 from modules.data_module import DataManager
 from modules.evidence_module import (
@@ -248,10 +250,10 @@ def render(ctx: AppContext) -> None:
             with col_json:
                 st.markdown("### 🧾 JSON")
                 st.markdown("Full structured data.")
-                json_str = rgen.export_to_json(report)
+                json_bytes = rgen.export_to_json(report).encode("utf-8")
                 st.download_button(
                     label="⬇️ Download JSON",
-                    data=json_str.encode("utf-8"),
+                    data=json_bytes,
                     file_name=f"ml_report_{report['generated_at'][:10]}.json",
                     mime="application/json",
                     width="stretch",
@@ -284,12 +286,11 @@ def render(ctx: AppContext) -> None:
                         width="stretch",
                         key="dl_pdf",
                     )
-                except Exception as e:
-                    # Rendered *and* logged: conventions §3 requires a
-                    # logger.exception on any blind catch, and the traceback is
-                    # the only place the underlying PDF error is diagnosable.
-                    logger.exception("PDF generation failed")
-                    st.error(f"PDF generation failed: {e}")
+                except FrameworkError as exc:
+                    render_error(exc)
+                except Exception:
+                    logger.exception("PDF generation failed: unexpected error")
+                    raise
 
             st.markdown("---")
             st.subheader("📋 Individual Table Downloads")
@@ -327,7 +328,7 @@ def render(ctx: AppContext) -> None:
             with d4:
                 st.download_button(
                     "Full JSON",
-                    rgen.export_to_json(report).encode("utf-8"),
+                    json_bytes,
                     file_name="full_report.json",
                     mime="application/json",
                     width="stretch",

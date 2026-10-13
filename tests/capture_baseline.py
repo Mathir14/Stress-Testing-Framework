@@ -336,10 +336,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.check:
         differences = compare(payload)
+        drifts = [d for d in differences if not d.startswith("NOTE ")]
         if differences:
             for line in differences:
                 print(line)
-            print(f"BASELINE DRIFT: {len(differences)} difference(s)", file=sys.stderr)
+        if drifts:
+            print(f"BASELINE DRIFT: {len(drifts)} difference(s)", file=sys.stderr)
             return 1
         print(f"Baseline matches {FIXTURE_PATH} bit-exactly.")
         return 0

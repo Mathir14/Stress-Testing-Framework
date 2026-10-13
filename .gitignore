@@ -43,6 +43,9 @@ Thumbs.db
 # Forge runtime data
 .forge/runs/
 .forge/cache/
+.forge/knowledge/
+.forge/working_tree.lock*
+forge.yaml
 
 # Wheels pulled in by an ad-hoc `pip download` during environment bootstrap.
 # They are install artifacts, never project dependencies — the pins live in

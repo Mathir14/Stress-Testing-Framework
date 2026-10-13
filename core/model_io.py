@@ -48,7 +48,7 @@ import os
 import pickle
 import re
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -106,7 +106,7 @@ class ArtifactRecord:
     created_at: str
     model_name: str
     format_version: int = MANIFEST_FORMAT_VERSION
-    library_versions: Mapping[str, str] = None  # type: ignore[assignment]
+    library_versions: Mapping[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Return the JSON-serialisable manifest entry for this record.
@@ -122,7 +122,7 @@ class ArtifactRecord:
             "created_at": self.created_at,
             "model_name": self.model_name,
             "format_version": self.format_version,
-            "library_versions": dict(self.library_versions or {}),
+            "library_versions": dict(self.library_versions),
         }
 
     @classmethod

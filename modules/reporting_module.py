@@ -409,7 +409,12 @@ class ReportGenerator:
             return go.Figure()
 
         cats = ["Performance", "Calibration", "Robustness", "Confidence"]
-        maxvals = [25, 25, 25, 25]
+        maxvals = [
+            self._reliability.max_perf,
+            self._reliability.max_cal,
+            self._reliability.max_rob,
+            self._reliability.max_conf,
+        ]
         palette = ["#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A"]
 
         fig = go.Figure()
