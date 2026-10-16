@@ -505,51 +505,51 @@ class ReliabilityScorer:
             return recs
 
         # Performance
-        if sd["performance"] < 15:
+        if sd["performance"] < 0.60 * self.MAX_PERF:
             recs.append(
                 "🔴 **Performance** is low. "
                 "Consider adding more training data, feature engineering, "
                 "or trying a more powerful model architecture."
             )
-        elif sd["performance"] < 20:
+        elif sd["performance"] < 0.80 * self.MAX_PERF:
             recs.append(
                 "🟡 **Performance** is moderate. "
                 "Hyperparameter tuning or ensemble methods may improve accuracy/F1."
             )
 
         # Calibration
-        if sd["calibration"] < 12:
+        if sd["calibration"] < 0.48 * self.MAX_CAL:
             recs.append(
                 "🔴 **Calibration** is poor (high ECE). "
                 "Apply temperature scaling (Module 6) or use Platt scaling / isotonic regression."
             )
-        elif sd["calibration"] < 18:
+        elif sd["calibration"] < 0.72 * self.MAX_CAL:
             recs.append(
                 "🟡 **Calibration** could be improved. "
                 "Review the confidence histogram and consider post-hoc calibration."
             )
 
         # Robustness
-        if sd["robustness"] < 12:
+        if sd["robustness"] < 0.48 * self.MAX_ROB:
             recs.append(
                 "🔴 **Robustness** is low. "
                 "Model is sensitive to perturbations. "
                 "Consider data augmentation, adversarial training, or feature standardisation."
             )
-        elif sd["robustness"] < 18:
+        elif sd["robustness"] < 0.72 * self.MAX_ROB:
             recs.append(
                 "🟡 **Robustness** is moderate. "
                 "Investigate which stress types cause the largest drops (Module 4)."
             )
 
         # Confidence quality
-        if sd["confidence"] < 12:
+        if sd["confidence"] < 0.48 * self.MAX_CONF:
             recs.append(
                 "🔴 **Confidence Quality** is poor. "
                 "The model produces high-entropy or misleadingly confident predictions. "
                 "Review high-confidence errors (Module 3)."
             )
-        elif sd["confidence"] < 18:
+        elif sd["confidence"] < 0.72 * self.MAX_CONF:
             recs.append(
                 "🟡 **Confidence Quality** is moderate. "
                 "Some high-confidence errors detected — inspect borderline cases."

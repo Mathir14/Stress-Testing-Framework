@@ -253,6 +253,22 @@ def test_class_count_falls_back_when_empty() -> None:
     assert class_count({}, fallback=4) == 4
 
 
+def test_class_count_warns_and_falls_back_on_discrepancy(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """When models in evidence report conflicting class counts, log a warning and fall back."""
+    import logging
+
+    evidence = {
+        "binary": ModelEvidence("binary", 0.9, 0.9, 0.1, 0.2, 0.5, 0.05, 2),
+        "multiclass": ModelEvidence("multiclass", 0.8, 0.8, 0.1, 0.2, 0.5, 0.05, 3),
+    }
+    with caplog.at_level(logging.WARNING):
+        result = class_count(evidence, fallback=5)
+    assert result == 5
+    assert "Discrepancy detected in model evidence class counts" in caplog.text
+
+
 def test_robustness_scores_uses_shared_transform_and_cap() -> None:
     """``robustness_scores`` is the shared 0-100 transform, missing dropped."""
     evidence = {
@@ -282,6 +298,7 @@ def test_robustness_score_is_none_when_drop_unmeasured() -> None:
 def test_predict_logging_distinguishes_causes(caplog: pytest.LogCaptureFixture) -> None:
     """ADR-035: _predict logs cause-distinguishing messages for failures."""
     import logging
+
     from core.errors import ModelNotTrainedError, ModelPredictionError
     from modules.evidence_module import _predict
 

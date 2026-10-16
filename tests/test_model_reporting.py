@@ -121,6 +121,7 @@ def test_load_surfaces_a_non_framework_reporter_defect():
 def test_predict_distinguishes_untrained_from_prediction_failures():
     """ADR-035: untrained raises ModelNotTrainedError, inference failure raises ModelPredictionError."""
     import pandas as pd
+
     from core.errors import ModelNotTrainedError, ModelPredictionError
 
     trainer = ModelTrainer()
@@ -152,3 +153,31 @@ def test_predict_distinguishes_untrained_from_prediction_failures():
     trainer.trained_models["NoProba"] = _BrokenProbaEstimator()
     with pytest.raises(ModelPredictionError, match="cannot produce probabilities"):
         trainer.predict("NoProba", pd.DataFrame([[1, 2]]))
+
+
+def test_get_best_model_raises_typed_errors_on_invalid_conditions():
+    """get_best_model raises ModelNotTrainedError and ValidationError instead of sentinel (None, -1)."""
+    from core.errors import ModelNotTrainedError, ValidationError
+
+    trainer = ModelTrainer()
+
+    # 1. No metrics at all
+    with pytest.raises(ModelNotTrainedError, match="No trained models"):
+        trainer.get_best_model("accuracy", "Test")
+
+    # 2. Metrics present, but dataset_name not found
+    trainer.metrics = {"m1": {"Validation": {"accuracy": 0.85, "f1": 0.84}}}
+    with pytest.raises(
+        ModelNotTrainedError, match="No evaluated metrics found for dataset 'Test'"
+    ):
+        trainer.get_best_model("accuracy", "Test")
+
+    # 3. Invalid metric name
+    with pytest.raises(ValidationError, match="not a valid evaluation metric"):
+        trainer.get_best_model("nonexistent_metric", "Validation")
+
+    # 4. Valid evaluation returns best model and score
+    trainer.metrics["m2"] = {"Validation": {"accuracy": 0.92, "f1": 0.91}}
+    best_name, best_score = trainer.get_best_model("accuracy", "Validation")
+    assert best_name == "m2"
+    assert best_score == 0.92

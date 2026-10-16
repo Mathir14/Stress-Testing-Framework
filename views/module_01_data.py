@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from core.config import get_config
 from core.errors import DatasetLoadError
 from core.state import AppContext, StateKeys
 from modules.data_module import DataManager
@@ -260,7 +261,8 @@ def render(ctx: AppContext) -> None:
             with col2:
                 val_size = st.slider("Validation Set Size", 0.05, 0.2, 0.1, 0.05)
             with col3:
-                random_state = st.number_input("Random State", 1, 999, 42)
+                default_seed = get_config().random_seed if get_config().random_seed is not None else 42
+                random_state = st.number_input("Random State", 1, 999, default_seed)
 
             train_size = 1 - test_size - val_size
 

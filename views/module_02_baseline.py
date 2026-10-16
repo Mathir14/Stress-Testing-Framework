@@ -99,7 +99,8 @@ def render(ctx: AppContext) -> None:
                 with col3:
                     params["learning_rate"] = st.slider("Learning Rate", 0.01, 1.0, 0.1, 0.01)
 
-            params["random_state"] = 42
+            seed = get_config().random_seed
+            params["random_state"] = seed if seed is not None else 42
 
             st.markdown("---")
 
@@ -390,9 +391,13 @@ def render(ctx: AppContext) -> None:
                     key="best_model_dataset",
                 )
 
-                best_model, best_score = model_trainer.get_best_model(metric_choice, dataset_choice)
-
-                if best_model:
+                try:
+                    best_model, best_score = model_trainer.get_best_model(
+                        metric_choice, dataset_choice
+                    )
+                except FrameworkError as exc:
+                    render_error(exc)
+                else:
                     col1, col2 = st.columns(2)
                     with col1:
                         st.success(f"**Best Model:** {best_model}")

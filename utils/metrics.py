@@ -86,7 +86,7 @@ def identify_high_confidence_errors(
     return {
         "indices": np.where(high_conf_errors)[0],
         "count": count,
-        "percentage": (count / len(y_true)) * 100,
+        "percentage": (count / len(y_true) * 100) if len(y_true) > 0 else 0.0,
         "avg_confidence": (
             float(np.mean(confidence[high_conf_errors])) if count > 0 else 0.0
         ),

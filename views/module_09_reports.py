@@ -7,7 +7,6 @@ import streamlit as st
 
 from core.errors import FrameworkError
 from core.state import AppContext, StateKeys
-from views.reporters import render_error
 from modules.calibration_module import CalibrationAnalyzer
 from modules.data_module import DataManager
 from modules.evidence_module import (
@@ -20,6 +19,7 @@ from modules.evidence_module import (
 from modules.model_module import ModelTrainer
 from modules.reliability_module import ReliabilityScorer
 from modules.reporting_module import ReportGenerator
+from views.reporters import render_error
 
 logger = logging.getLogger(__name__)
 

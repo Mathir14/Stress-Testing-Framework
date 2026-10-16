@@ -72,7 +72,7 @@ def render(ctx: AppContext) -> None:
 
                     if hasattr(model, "predict_proba"):
                         with st.spinner("Computing calibration metrics..."):
-                            probabilities = model.predict_proba(X)
+                            _, probabilities = model_trainer.predict(model_cal, X)
                             y_arr = np.asarray(y)
                             classes = getattr(model, "classes_", None)
 
@@ -165,7 +165,7 @@ def render(ctx: AppContext) -> None:
                             model,
                         ) in model_trainer.trained_models.items():
                             if hasattr(model, "predict_proba"):
-                                probs = model.predict_proba(X)
+                                _, probs = model_trainer.predict(mname, X)
                                 all_metrics[mname] = (
                                     calibration_analyzer.compute_calibration_metrics(
                                         y, probs, classes=getattr(model, "classes_", None)
@@ -237,7 +237,7 @@ def render(ctx: AppContext) -> None:
 
                     if hasattr(model, "predict_proba"):
                         with st.spinner("Computing per-class calibration..."):
-                            probs = model.predict_proba(X)
+                            _, probs = model_trainer.predict(model_cls, X)
                             model_classes = getattr(model, "classes_", None)
                             class_names = (
                                 [str(c) for c in model.classes_]
@@ -320,7 +320,7 @@ def render(ctx: AppContext) -> None:
                     )
 
                     if hasattr(model, "predict_proba"):
-                        probs = model.predict_proba(X)
+                        _, probs = model_trainer.predict(model_temp, X)
                         temp_classes = getattr(model, "classes_", None)
 
                         if auto_find:

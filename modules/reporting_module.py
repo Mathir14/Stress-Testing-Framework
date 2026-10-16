@@ -334,6 +334,15 @@ class ReportGenerator:
                 r["Grade"] for r in rows
             }
         }
+        thresholds = sorted({t for t, _ in self._reliability.grade_cutoffs} | {0.0, 100.0})
+        steps = [
+            {
+                "range": [low, high],
+                "color": self._reliability.resolve_grade(low)[1],
+            }
+            for low, high in zip(thresholds[:-1], thresholds[1:], strict=True)
+        ]
+
         for i, r in enumerate(rows, start=1):
             colour = grade_color.get(r["Grade"], "#999")
             fig.add_trace(
@@ -345,12 +354,7 @@ class ReportGenerator:
                     gauge={
                         "axis": {"range": [0, 100]},
                         "bar": {"color": colour},
-                        "steps": [
-                            {"range": [0, 50], "color": "#FADBD8"},
-                            {"range": [50, 70], "color": "#FAE5D3"},
-                            {"range": [70, 90], "color": "#D5F5E3"},
-                            {"range": [90, 100], "color": "#A9DFBF"},
-                        ],
+                        "steps": steps,
                     },
                 ),
                 row=1,
@@ -372,18 +376,13 @@ class ReportGenerator:
         models = [r["Model"] for r in rows]
         eces = [r["ECE"] for r in rows]
         quals = [r["Quality"] for r in rows]
-        colors = [
-            (
-                "#2ECC71"
-                if q == "Excellent"
-                else (
-                    "#27AE60"
-                    if q == "Good"
-                    else "#F39C12" if q == "Moderate" else "#E74C3C"
-                )
-            )
-            for q in quals
-        ]
+        quality_colors = {
+            "Excellent": "#2ECC71",
+            "Good": "#27AE60",
+            "Moderate": "#F39C12",
+            self._policy.quality_fallthrough: "#E74C3C",
+        }
+        colors = [quality_colors.get(q, "#E74C3C") for q in quals]
 
         fig = go.Figure(
             go.Bar(

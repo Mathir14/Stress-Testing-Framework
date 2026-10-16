@@ -31,6 +31,7 @@ from core.errors import (
     ModelNotTrainedError,
     ModelPredictionError,
     UnknownModelError,
+    ValidationError,
 )
 from core.model_io import ArtifactRecord, ModelArtifactStore
 
@@ -529,27 +530,69 @@ class ModelTrainer:
         self._store.delete(Path(filepath).name)
 
     def get_best_model(
-        self, metric: str = "accuracy", dataset_name: str = "Test"
-    ) -> tuple[str | None, float]:
-        """
-        Get the best performing model based on a metric
+        self, metric: str = "Accuracy", dataset_name: str = "Test"
+    ) -> tuple[str, float]:
+        """Identify the best-performing model for a given metric and dataset.
 
         Args:
-            metric: Metric to use for comparison
-            dataset_name: Dataset to evaluate on
+            metric: Evaluation metric name (e.g. "Accuracy", "F1 Score").
+            dataset_name: Dataset split ("Train", "Validation", "Test").
 
         Returns:
-            Tuple of (model_name, score)
-        """
-        best_score = -1
-        best_model = None
+            tuple[str, float]: (best_model_name, best_score).
 
-        for model_name in self.metrics:
-            if dataset_name in self.metrics[model_name]:
-                score = self.metrics[model_name][dataset_name][metric]
-                if score > best_score:
-                    best_score = score
-                    best_model = model_name
+        Raises:
+            ModelNotTrainedError: If no models have been evaluated or no metrics exist
+                for dataset_name.
+            ValidationError: If metric is not found in the evaluated metrics.
+        """
+        if not self.metrics:
+            raise ModelNotTrainedError(
+                "No trained models with evaluation metrics found.",
+                context={"dataset_name": dataset_name, "metric": metric},
+            )
+
+        matching_models = {
+            name: m[dataset_name]
+            for name, m in self.metrics.items()
+            if dataset_name in m
+        }
+        if not matching_models:
+            raise ModelNotTrainedError(
+                f"No evaluated metrics found for dataset {dataset_name!r}.",
+                context={"dataset_name": dataset_name, "metric": metric},
+            )
+
+        best_score = float("-inf")
+        best_model: str | None = None
+
+        for name, dmetrics in matching_models.items():
+            metric_key = None
+            if metric in dmetrics:
+                metric_key = metric
+            elif metric.lower() in dmetrics:
+                metric_key = metric.lower()
+            elif metric.title() in dmetrics:
+                metric_key = metric.title()
+
+            if metric_key is None:
+                raise ValidationError(
+                    f"Metric {metric!r} is not a valid evaluation metric.",
+                    field="metric",
+                    value=metric,
+                    context={"metric": metric},
+                )
+
+            score = float(dmetrics[metric_key])
+            if best_model is None or score > best_score:
+                best_score = score
+                best_model = name
+
+        if best_model is None:  # pragma: no cover - guarded by matching_models check
+            raise ModelNotTrainedError(
+                f"No evaluated metrics found for dataset {dataset_name!r}.",
+                context={"dataset_name": dataset_name, "metric": metric},
+            )
 
         self.best_model = best_model
         return best_model, best_score

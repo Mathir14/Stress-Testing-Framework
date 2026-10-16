@@ -77,8 +77,6 @@ def render(ctx: AppContext) -> None:
 
             if st.button("Generate Predictions", key="generate_predictions"):
                 with st.spinner("Generating predictions..."):
-                    model = model_trainer.trained_models[selected_model]
-
                     # Select dataset
                     if dataset_choice == "Validation Set":
                         X = data_manager.X_val
@@ -95,8 +93,7 @@ def render(ctx: AppContext) -> None:
                     # leave a half-written ``predictions`` entry behind.
                     try:
                         # Get predictions and probabilities
-                        y_pred = model.predict(X)
-                        y_proba = model.predict_proba(X)
+                        y_pred, y_proba = model_trainer.predict(selected_model, X)
 
                         # Get confidence scores
                         confidence = get_confidence_scores(y_proba)

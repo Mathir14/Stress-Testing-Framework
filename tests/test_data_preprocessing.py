@@ -426,6 +426,32 @@ def test_scale_features_gives_each_split_the_same_columns(manager: DataManager):
     assert all(list(part.columns) == list(X_train.columns) for part in scaled)
 
 
+def test_scale_features_validates_numeric_and_synchronizes_state(manager: DataManager):
+    """scale_features rejects non-numeric features and synchronizes instance state."""
+    from core.errors import ValidationError
+
+    # 1. Non-numeric columns in X_train raises ValidationError
+    bad_train = pd.DataFrame({"num": [1.0, 2.0], "cat": ["a", "b"]})
+    with pytest.raises(ValidationError, match="Cannot scale features with non-numeric columns"):
+        manager.scale_features(bad_train)
+
+    # 2. Non-numeric columns in X_val raises ValidationError
+    good_train = pd.DataFrame({"num": [1.0, 2.0, 3.0]})
+    bad_val = pd.DataFrame({"num": [4.0], "cat": ["x"]})
+    with pytest.raises(ValidationError, match="Cannot scale features with non-numeric columns"):
+        manager.scale_features(good_train, X_val=bad_val)
+
+    # 3. Synchronizes state
+    good_val = pd.DataFrame({"num": [4.0]})
+    good_test = pd.DataFrame({"num": [5.0]})
+    scaled_train, scaled_val, scaled_test = manager.scale_features(
+        good_train, X_val=good_val, X_test=good_test
+    )
+    pd.testing.assert_frame_equal(manager.X_train, scaled_train)
+    pd.testing.assert_frame_equal(manager.X_val, scaled_val)
+    pd.testing.assert_frame_equal(manager.X_test, scaled_test)
+
+
 def test_get_split_summary_raises_when_unprepared(manager: DataManager):
     """§9 item 2: the pre-remediation ``None`` return became a typed error."""
     with pytest.raises(DatasetError):

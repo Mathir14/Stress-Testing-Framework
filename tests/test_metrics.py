@@ -131,6 +131,17 @@ def test_hce_threshold_is_inclusive(hce_batch):
     assert at_boundary["count"] == 1
 
 
+def test_hce_handles_empty_inputs_without_zero_division():
+    """Empty inputs return count 0 and percentage 0.0 without ZeroDivisionError."""
+    info = identify_high_confidence_errors(
+        np.array([]), np.array([]), np.empty((0, 2))
+    )
+    assert info["count"] == 0
+    assert info["percentage"] == 0.0
+    assert info["avg_confidence"] == 0.0
+    assert len(info["indices"]) == 0
+
+
 # ── Removed symbols (ADR-017) ─────────────────────────────────────────────────
 
 

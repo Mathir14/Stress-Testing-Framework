@@ -335,20 +335,47 @@ class DataManager:
     def scale_features(
         self,
         X_train: pd.DataFrame,
-        X_val: pd.DataFrame = None,
-        X_test: pd.DataFrame = None,
-    ) -> Tuple:
-        """
-        Scale features using StandardScaler
+        X_val: pd.DataFrame | None = None,
+        X_test: pd.DataFrame | None = None,
+    ) -> tuple[pd.DataFrame, pd.DataFrame | None, pd.DataFrame | None]:
+        """Fit StandardScaler on training features and transform all provided splits.
 
         Args:
-            X_train: Training features
-            X_val: Validation features (optional)
-            X_test: Test features (optional)
+            X_train: Training features.
+            X_val: Optional validation features.
+            X_test: Optional test features.
 
         Returns:
-            Tuple: Scaled datasets
+            tuple: (X_train_scaled, X_val_scaled, X_test_scaled).
+
+        Raises:
+            ValidationError: If any column in X_train, X_val, or X_test is non-numeric.
         """
+        datasets = [("X_train", X_train)]
+        if X_val is not None:
+            datasets.append(("X_val", X_val))
+        if X_test is not None:
+            datasets.append(("X_test", X_test))
+
+        non_numeric_cols: list[str] = []
+        for _, df in datasets:
+            if not isinstance(df, pd.DataFrame):
+                continue
+            for col in df.columns:
+                if not pd.api.types.is_numeric_dtype(df[col]):
+                    col_str = str(col)
+                    if col_str not in non_numeric_cols:
+                        non_numeric_cols.append(col_str)
+
+        if non_numeric_cols:
+            raise ValidationError(
+                f"Cannot scale features with non-numeric columns: {non_numeric_cols}. "
+                "Encode or drop categorical columns before scaling.",
+                field="columns",
+                value=non_numeric_cols,
+                context={"non_numeric_columns": non_numeric_cols},
+            )
+
         self.scaler = StandardScaler()
 
         # Fit on training data only
@@ -373,6 +400,12 @@ class DataManager:
                 columns=X_test.columns,
                 index=X_test.index,
             )
+
+        self.X_train = X_train_scaled
+        if X_val_scaled is not None:
+            self.X_val = X_val_scaled
+        if X_test_scaled is not None:
+            self.X_test = X_test_scaled
 
         return X_train_scaled, X_val_scaled, X_test_scaled
 

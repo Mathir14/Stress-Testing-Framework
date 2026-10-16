@@ -246,9 +246,19 @@ def collect_evidence(
 
 def class_count(evidence: Mapping[str, ModelEvidence], *, fallback: int = 2) -> int:
     """Return the shared class count held by the evidence, or ``fallback``."""
-    for item in evidence.values():
-        return item.n_classes
-    return fallback
+    if not evidence:
+        return fallback
+
+    counts = {item.n_classes for item in evidence.values()}
+    if len(counts) > 1:
+        logger.warning(
+            "Discrepancy detected in model evidence class counts: %s; falling back to %d.",
+            counts,
+            fallback,
+        )
+        return fallback
+
+    return next(iter(counts))
 
 
 def calibration_ece(evidence: Mapping[str, ModelEvidence]) -> dict[str, float]:
