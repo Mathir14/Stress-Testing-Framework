@@ -26,7 +26,12 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from core.errors import FrameworkError, ModelNotTrainedError, ModelPredictionError
+from core.errors import (
+    DatasetError,
+    FrameworkError,
+    ModelNotTrainedError,
+    ModelPredictionError,
+)
 from core.scoring import mean_performance_drop, robustness_fraction
 from utils.metrics import get_prediction_entropy, identify_high_confidence_errors
 
@@ -244,13 +249,32 @@ def collect_evidence(
     return evidence
 
 
-def class_count(evidence: Mapping[str, ModelEvidence], *, fallback: int = 2) -> int:
-    """Return the shared class count held by the evidence, or ``fallback``."""
+def class_count(
+    evidence: Mapping[str, ModelEvidence],
+    *,
+    fallback: int = 2,
+    strict: bool = False,
+) -> int:
+    """Return the shared class count held by the evidence, or ``fallback``.
+
+    Args:
+        evidence: Model evidence mapping.
+        fallback: Fallback class count when evidence is empty or discordant.
+        strict: When True, raise :class:`core.errors.DatasetError` on conflicting class counts.
+
+    Raises:
+        DatasetError: If ``strict=True`` and evidence contains conflicting class counts.
+    """
     if not evidence:
         return fallback
 
     counts = {item.n_classes for item in evidence.values()}
     if len(counts) > 1:
+        if strict:
+            raise DatasetError(
+                f"Conflicting class counts detected across models: {sorted(counts)}.",
+                context={"class_counts": sorted(counts)},
+            )
         logger.warning(
             "Discrepancy detected in model evidence class counts: %s; falling back to %d.",
             counts,

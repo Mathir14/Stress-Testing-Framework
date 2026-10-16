@@ -159,3 +159,19 @@ def test_non_finite_floats_nested_in_lists_are_also_nulled() -> None:
     """The rewrite walks containers, so a nested ``nan`` cannot slip through."""
     payload = ReportGenerator().export_to_json({"rows": [{"drop": float("nan")}]})
     assert json.loads(payload) == {"rows": [{"drop": None}]}
+
+
+def test_plot_gauge_all_uses_translucent_step_bands() -> None:
+    """plot_gauge_all converts background step bands to translucent rgba for contrast."""
+    rgen = ReportGenerator()
+    rows = [
+        {"Model": "M1", "Total": 85.0, "Grade": "A"},
+        {"Model": "M2", "Total": 65.0, "Grade": "C"},
+    ]
+    fig = rgen.plot_gauge_all(rows)
+    assert fig is not None
+    trace = fig.data[0]
+    steps = trace.gauge.steps
+    assert len(steps) > 0
+    for s in steps:
+        assert s["color"].startswith("rgba(") and s["color"].endswith(", 0.22)")

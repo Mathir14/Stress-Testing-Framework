@@ -556,3 +556,26 @@ def test_scoring_policy_rejects_invalid_thresholds():
     with pytest.raises(ConfigurationError, match="low_prediction_stability_threshold"):
         ScoringPolicy(low_prediction_stability_threshold=1.5)
 
+
+def test_scoring_policy_recommendation_component_ratios():
+    """ScoringPolicy retrieves component recommendation cutoff ratios and validates structure."""
+    from core.config import ScoringPolicy
+    from core.errors import ConfigurationError
+
+    policy = ScoringPolicy()
+    assert policy.recommendation_ratios_for("performance") == (0.60, 0.80)
+    assert policy.recommendation_ratios_for("calibration") == (0.48, 0.72)
+    assert policy.recommendation_ratios_for("robustness") == (0.48, 0.72)
+    assert policy.recommendation_ratios_for("confidence") == (0.48, 0.72)
+
+    with pytest.raises(ConfigurationError, match="Unknown recommendation component"):
+        policy.recommendation_ratios_for("unknown_component")
+
+    # Invalid empty or non-tuple
+    with pytest.raises(ConfigurationError, match="recommendation_component_ratios"):
+        ScoringPolicy(recommendation_component_ratios=())
+
+    # Invalid component ratio ordering
+    with pytest.raises(ConfigurationError, match="must satisfy 0.0 <= low <= high <= 1.0"):
+        ScoringPolicy(recommendation_component_ratios=(("performance", (0.90, 0.60)),))
+

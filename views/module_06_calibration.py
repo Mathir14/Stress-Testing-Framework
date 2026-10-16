@@ -66,15 +66,14 @@ def render(ctx: AppContext) -> None:
 
             if st.button("📈 Generate Calibration Curve", type="primary", key="btn_cal_1"):
                 with render_errors():
-                    model = model_trainer.trained_models[model_cal]
                     X = data["X_val"] if dataset_cal == "Validation" else data["X_test"]
                     y = data["y_val"] if dataset_cal == "Validation" else data["y_test"]
 
-                    if hasattr(model, "predict_proba"):
+                    if model_trainer.supports_probabilities(model_cal):
                         with st.spinner("Computing calibration metrics..."):
                             _, probabilities = model_trainer.predict(model_cal, X)
                             y_arr = np.asarray(y)
-                            classes = getattr(model, "classes_", None)
+                            classes = model_trainer.get_classes(model_cal)
 
                             metrics = calibration_analyzer.compute_calibration_metrics(
                                 y_arr, probabilities, classes=classes, n_bins=n_bins_cal
@@ -160,15 +159,12 @@ def render(ctx: AppContext) -> None:
 
                     all_metrics = {}
                     with st.spinner("Computing calibration metrics for all models..."):
-                        for (
-                            mname,
-                            model,
-                        ) in model_trainer.trained_models.items():
-                            if hasattr(model, "predict_proba"):
+                        for mname in model_trainer.trained_models:
+                            if model_trainer.supports_probabilities(mname):
                                 _, probs = model_trainer.predict(mname, X)
                                 all_metrics[mname] = (
                                     calibration_analyzer.compute_calibration_metrics(
-                                        y, probs, classes=getattr(model, "classes_", None)
+                                        y, probs, classes=model_trainer.get_classes(mname)
                                     )
                                 )
 
@@ -231,19 +227,14 @@ def render(ctx: AppContext) -> None:
 
             if st.button("🔬 Analyse Per-Class Calibration", type="primary", key="btn_cal_3"):
                 with render_errors():
-                    model = model_trainer.trained_models[model_cls]
                     X = data["X_val"] if dataset_cls == "Validation" else data["X_test"]
                     y = np.asarray(data["y_val"] if dataset_cls == "Validation" else data["y_test"])
 
-                    if hasattr(model, "predict_proba"):
+                    if model_trainer.supports_probabilities(model_cls):
                         with st.spinner("Computing per-class calibration..."):
                             _, probs = model_trainer.predict(model_cls, X)
-                            model_classes = getattr(model, "classes_", None)
-                            class_names = (
-                                [str(c) for c in model.classes_]
-                                if hasattr(model, "classes_")
-                                else None
-                            )
+                            model_classes = model_trainer.get_classes(model_cls)
+                            class_names = model_trainer.get_class_names(model_cls)
 
                             per_class_df = calibration_analyzer.compute_per_class_calibration(
                                 y, probs, classes=model_classes, class_names=class_names
@@ -313,15 +304,14 @@ def render(ctx: AppContext) -> None:
 
             if auto_find or apply_btn:
                 with render_errors():
-                    model = model_trainer.trained_models[model_temp]
                     X = data["X_val"] if dataset_temp == "Validation" else data["X_test"]
                     y = np.asarray(
                         data["y_val"] if dataset_temp == "Validation" else data["y_test"]
                     )
 
-                    if hasattr(model, "predict_proba"):
+                    if model_trainer.supports_probabilities(model_temp):
                         _, probs = model_trainer.predict(model_temp, X)
-                        temp_classes = getattr(model, "classes_", None)
+                        temp_classes = model_trainer.get_classes(model_temp)
 
                         if auto_find:
                             with st.spinner("Searching for optimal temperature..."):

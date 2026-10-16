@@ -380,6 +380,12 @@ class ScoringPolicy:
     )
     robustness_fallthrough: str = "Low"
     low_prediction_stability_threshold: float = 0.8
+    recommendation_component_ratios: tuple[tuple[str, tuple[float, float]], ...] = (
+        ("performance", (0.60, 0.80)),
+        ("calibration", (0.48, 0.72)),
+        ("robustness", (0.48, 0.72)),
+        ("confidence", (0.48, 0.72)),
+    )
 
     def resolve_ece_quality(self, ece: float) -> str:
         """Classify an expected-calibration-error value.
@@ -458,6 +464,28 @@ class ScoringPolicy:
             if name == component:
                 return float(weight)
         return 0.0
+
+    def recommendation_ratios_for(self, component: str) -> tuple[float, float]:
+        """Return (poor_cutoff_ratio, moderate_cutoff_ratio) for the component.
+
+        Args:
+            component: Component name (e.g. 'performance', 'calibration', 'robustness', 'confidence').
+
+        Returns:
+            tuple[float, float]: (poor_ratio, moderate_ratio).
+
+        Raises:
+            ConfigurationError: If component is unknown.
+        """
+        for name, ratios in self.recommendation_component_ratios:
+            if name == component:
+                return (float(ratios[0]), float(ratios[1]))
+        from core.errors import ConfigurationError
+
+        raise ConfigurationError(
+            f"Unknown recommendation component: {component!r}",
+            context={"field": "recommendation_component_ratios", "value": component},
+        )
 
     def __post_init__(self) -> None:
         """Validate weights sum, band ordering and sign (ADR-023).
@@ -571,6 +599,55 @@ class ScoringPolicy:
                     f"ScoringPolicy.{label_field} must be a non-empty string, "
                     f"got {label!r}.",
                     context={"field": label_field, "value": label},
+                )
+
+        ratios = self.recommendation_component_ratios
+        if not isinstance(ratios, tuple) or len(ratios) == 0:
+            raise ConfigurationError(
+                "ScoringPolicy.recommendation_component_ratios must be a non-empty tuple of "
+                "(component, ratios) pairs.",
+                context={"field": "recommendation_component_ratios", "expected": "non-empty tuple"},
+            )
+        seen_components: set[str] = set()
+        for row in ratios:
+            if not isinstance(row, tuple) or len(row) != 2:
+                raise ConfigurationError(
+                    f"ScoringPolicy.recommendation_component_ratios entries must be (component, "
+                    f"ratios) pairs, got {row!r}.",
+                    context={"field": "recommendation_component_ratios", "expected": "tuple of 2 items"},
+                )
+            comp_name, comp_ratios = row
+            if not isinstance(comp_name, str) or not comp_name:
+                raise ConfigurationError(
+                    f"ScoringPolicy.recommendation_component_ratios components must be non-empty "
+                    f"strings, got {comp_name!r}.",
+                    context={"field": "recommendation_component_ratios", "value": comp_name},
+                )
+            if comp_name in seen_components:
+                raise ConfigurationError(
+                    f"ScoringPolicy.recommendation_component_ratios lists {comp_name!r} twice.",
+                    context={"field": "recommendation_component_ratios", "value": comp_name},
+                )
+            seen_components.add(comp_name)
+            if not isinstance(comp_ratios, tuple) or len(comp_ratios) != 2:
+                raise ConfigurationError(
+                    f"ScoringPolicy.recommendation_component_ratios pair for {comp_name!r} must "
+                    f"be a tuple of 2 numbers, got {comp_ratios!r}.",
+                    context={"field": "recommendation_component_ratios", "value": comp_ratios},
+                )
+            low_r, high_r = comp_ratios
+            for r_val in (low_r, high_r):
+                if isinstance(r_val, bool) or not isinstance(r_val, (int, float)):
+                    raise ConfigurationError(
+                        f"ScoringPolicy.recommendation_component_ratios ratios for {comp_name!r} "
+                        f"must be numbers, got {r_val!r}.",
+                        context={"field": "recommendation_component_ratios", "value": r_val},
+                    )
+            if not (0.0 <= float(low_r) <= float(high_r) <= 1.0):
+                raise ConfigurationError(
+                    f"ScoringPolicy.recommendation_component_ratios ratios for {comp_name!r} "
+                    f"must satisfy 0.0 <= low <= high <= 1.0, got ({low_r}, {high_r}).",
+                    context={"field": "recommendation_component_ratios", "value": comp_ratios},
                 )
 
     def _validate_descending_bands(self, attr: str) -> None:

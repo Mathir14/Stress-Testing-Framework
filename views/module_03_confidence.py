@@ -315,11 +315,7 @@ def render(ctx: AppContext) -> None:
                 st.plotly_chart(fig_calib, width="stretch")
 
                 # Brier score (single owner: modules.calibration_module, ADR-017)
-                classes = getattr(
-                    model_trainer.trained_models.get(pred_data["model_name"]),
-                    "classes_",
-                    None,
-                )
+                classes = model_trainer.get_classes(pred_data["model_name"])
                 brier = multiclass_brier(
                     pred_data["y_true"],
                     pred_data["y_proba"],

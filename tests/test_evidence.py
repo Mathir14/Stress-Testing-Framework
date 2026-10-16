@@ -269,6 +269,18 @@ def test_class_count_warns_and_falls_back_on_discrepancy(
     assert "Discrepancy detected in model evidence class counts" in caplog.text
 
 
+def test_class_count_raises_dataset_error_in_strict_mode() -> None:
+    """When strict=True, conflicting class counts raise DatasetError."""
+    from core.errors import DatasetError
+
+    evidence = {
+        "binary": ModelEvidence("binary", 0.9, 0.9, 0.1, 0.2, 0.5, 0.05, 2),
+        "multiclass": ModelEvidence("multiclass", 0.8, 0.8, 0.1, 0.2, 0.5, 0.05, 3),
+    }
+    with pytest.raises(DatasetError, match="Conflicting class counts detected across models: \\[2, 3\\]"):
+        class_count(evidence, strict=True)
+
+
 def test_robustness_scores_uses_shared_transform_and_cap() -> None:
     """``robustness_scores`` is the shared 0-100 transform, missing dropped."""
     evidence = {

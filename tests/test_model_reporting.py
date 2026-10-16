@@ -31,6 +31,8 @@ pytest.importorskip("sklearn", reason="ModelTrainer pulls the scientific stack")
 pytest.importorskip("xgboost", reason="ModelTrainer pulls the scientific stack")
 pytest.importorskip("plotly", reason="ModelTrainer pulls the scientific stack")
 
+import numpy as np
+
 from core.errors import FrameworkError
 from core.model_io import ArtifactRecord
 from modules.model_module import ModelTrainer
@@ -181,3 +183,117 @@ def test_get_best_model_raises_typed_errors_on_invalid_conditions():
     best_name, best_score = trainer.get_best_model("accuracy", "Validation")
     assert best_name == "m2"
     assert best_score == 0.92
+
+
+def test_get_best_model_metric_polarity_minimization_and_explicit_flag():
+    """get_best_model supports minimization metrics and explicit lower_is_better flag."""
+    trainer = ModelTrainer()
+    trainer.metrics = {
+        "m_low": {"Test": {"accuracy": 0.70, "loss": 0.20, "ece": 0.03, "custom_metric": 10.0}},
+        "m_high": {"Test": {"accuracy": 0.90, "loss": 0.50, "ece": 0.15, "custom_metric": 50.0}},
+    }
+
+    # Maximization (default inferred)
+    best_name, best_score = trainer.get_best_model("accuracy", "Test")
+    assert best_name == "m_high"
+    assert best_score == 0.90
+
+    # Minimization: 'loss' (inferred)
+    best_name, best_score = trainer.get_best_model("loss", "Test")
+    assert best_name == "m_low"
+    assert best_score == 0.20
+
+    # Minimization: 'ece' (inferred)
+    best_name, best_score = trainer.get_best_model("ece", "Test")
+    assert best_name == "m_low"
+    assert best_score == 0.03
+
+    # Explicit lower_is_better=True on custom metric
+    best_name, best_score = trainer.get_best_model("custom_metric", "Test", lower_is_better=True)
+    assert best_name == "m_low"
+    assert best_score == 10.0
+
+    # Explicit lower_is_better=False on loss metric overrides inference
+    best_name, best_score = trainer.get_best_model("loss", "Test", lower_is_better=False)
+    assert best_name == "m_high"
+    assert best_score == 0.50
+
+
+def test_model_trainer_capability_introspection():
+    """supports_probabilities, get_classes, get_class_names, supports_feature_importance work as expected."""
+    from core.errors import ModelNotTrainedError
+
+    trainer = ModelTrainer()
+
+    # Querying untrained models raises ModelNotTrainedError
+    for meth in ("supports_probabilities", "get_classes", "get_class_names", "supports_feature_importance"):
+        with pytest.raises(ModelNotTrainedError):
+            getattr(trainer, meth)("nonexistent_model")
+
+    class _DummyTreeEstimator:
+        classes_ = np.array([0, 1])
+        feature_importances_ = np.array([0.4, 0.6])
+
+        def predict_proba(self, _x):
+            return np.array([[0.5, 0.5]])
+
+    class _DummyLinearEstimator:
+        classes_ = np.array(["cat", "dog"])
+
+    trainer.trained_models["tree"] = _DummyTreeEstimator()
+    trainer.trained_models["linear"] = _DummyLinearEstimator()
+
+    assert trainer.supports_probabilities("tree") is True
+    assert trainer.supports_probabilities("linear") is False
+
+    np.testing.assert_array_equal(trainer.get_classes("tree"), np.array([0, 1]))
+    assert trainer.get_class_names("tree") == ["0", "1"]
+    assert trainer.get_class_names("linear") == ["cat", "dog"]
+
+    assert trainer.supports_feature_importance("tree") is True
+    assert trainer.supports_feature_importance("linear") is False
+
+
+def test_model_trainer_query_methods_raise_typed_errors_not_none():
+    """Visualization and query methods raise typed FrameworkError instead of returning None sentinels."""
+    from core.errors import ModelNotTrainedError, ValidationError
+
+    trainer = ModelTrainer()
+
+    # Untrained model raises ModelNotTrainedError
+    with pytest.raises(ModelNotTrainedError):
+        trainer.get_classification_report("untrained")
+
+    with pytest.raises(ModelNotTrainedError):
+        trainer.plot_confusion_matrix("untrained")
+
+    with pytest.raises(ModelNotTrainedError):
+        trainer.plot_metrics_comparison("Test")
+
+    with pytest.raises(ModelNotTrainedError):
+        trainer.get_feature_importance("untrained", ["f1"])
+
+    with pytest.raises(ModelNotTrainedError):
+        trainer.plot_feature_importance("untrained", ["f1"])
+
+    with pytest.raises(ModelNotTrainedError):
+        trainer.get_probability_distribution("untrained")
+
+    # Model trained without feature_importances_
+    class _DummyNoFI:
+        pass
+
+    trainer.trained_models["no_fi"] = _DummyNoFI()
+    with pytest.raises(ValidationError, match="does not support feature importances"):
+        trainer.get_feature_importance("no_fi", ["f1"])
+
+    # Feature names length mismatch
+    class _DummyFI:
+        feature_importances_ = np.array([0.5, 0.5])
+
+    trainer.trained_models["fi"] = _DummyFI()
+    with pytest.raises(ValidationError, match="Length of feature_names"):
+        trainer.get_feature_importance("fi", ["f1"])
+
+    with pytest.raises(ValidationError, match="top_n must be a positive integer"):
+        trainer.plot_feature_importance("fi", ["f1", "f2"], top_n=0)

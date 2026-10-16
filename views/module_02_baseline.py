@@ -253,19 +253,17 @@ def render(ctx: AppContext) -> None:
                 data = data_manager.get_data()
                 feature_names = data["feature_columns"]
 
-                if model_fi in ["Random Forest", "XGBoost"]:
+                if model_trainer.supports_feature_importance(model_fi):
                     top_n = st.slider("Number of top features to display", 5, 20, 10)
 
                     # Plot feature importance
                     fi_fig = model_trainer.plot_feature_importance(model_fi, feature_names, top_n)
+                    st.plotly_chart(fi_fig, width="stretch")
 
-                    if fi_fig:
-                        st.plotly_chart(fi_fig, width="stretch")
-
-                        # Show table
-                        st.subheader("📊 Feature Importance Table")
-                        fi_df = model_trainer.get_feature_importance(model_fi, feature_names)
-                        st.dataframe(fi_df, width="stretch")
+                    # Show table
+                    st.subheader("📊 Feature Importance Table")
+                    fi_df = model_trainer.get_feature_importance(model_fi, feature_names)
+                    st.dataframe(fi_df, width="stretch")
                 else:
                     st.info(f"❌ Feature importance not available for {model_fi}")
                     st.write("Currently supported for: Random Forest, XGBoost")

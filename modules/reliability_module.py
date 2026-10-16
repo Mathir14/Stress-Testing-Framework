@@ -504,52 +504,57 @@ class ReliabilityScorer:
             )
             return recs
 
+        perf_low, perf_mid = self.policy.recommendation_ratios_for("performance")
+        cal_low, cal_mid = self.policy.recommendation_ratios_for("calibration")
+        rob_low, rob_mid = self.policy.recommendation_ratios_for("robustness")
+        conf_low, conf_mid = self.policy.recommendation_ratios_for("confidence")
+
         # Performance
-        if sd["performance"] < 0.60 * self.MAX_PERF:
+        if sd["performance"] < perf_low * self.MAX_PERF:
             recs.append(
                 "🔴 **Performance** is low. "
                 "Consider adding more training data, feature engineering, "
                 "or trying a more powerful model architecture."
             )
-        elif sd["performance"] < 0.80 * self.MAX_PERF:
+        elif sd["performance"] < perf_mid * self.MAX_PERF:
             recs.append(
                 "🟡 **Performance** is moderate. "
                 "Hyperparameter tuning or ensemble methods may improve accuracy/F1."
             )
 
         # Calibration
-        if sd["calibration"] < 0.48 * self.MAX_CAL:
+        if sd["calibration"] < cal_low * self.MAX_CAL:
             recs.append(
                 "🔴 **Calibration** is poor (high ECE). "
                 "Apply temperature scaling (Module 6) or use Platt scaling / isotonic regression."
             )
-        elif sd["calibration"] < 0.72 * self.MAX_CAL:
+        elif sd["calibration"] < cal_mid * self.MAX_CAL:
             recs.append(
                 "🟡 **Calibration** could be improved. "
                 "Review the confidence histogram and consider post-hoc calibration."
             )
 
         # Robustness
-        if sd["robustness"] < 0.48 * self.MAX_ROB:
+        if sd["robustness"] < rob_low * self.MAX_ROB:
             recs.append(
                 "🔴 **Robustness** is low. "
                 "Model is sensitive to perturbations. "
                 "Consider data augmentation, adversarial training, or feature standardisation."
             )
-        elif sd["robustness"] < 0.72 * self.MAX_ROB:
+        elif sd["robustness"] < rob_mid * self.MAX_ROB:
             recs.append(
                 "🟡 **Robustness** is moderate. "
                 "Investigate which stress types cause the largest drops (Module 4)."
             )
 
         # Confidence quality
-        if sd["confidence"] < 0.48 * self.MAX_CONF:
+        if sd["confidence"] < conf_low * self.MAX_CONF:
             recs.append(
                 "🔴 **Confidence Quality** is poor. "
                 "The model produces high-entropy or misleadingly confident predictions. "
                 "Review high-confidence errors (Module 3)."
             )
-        elif sd["confidence"] < 0.72 * self.MAX_CONF:
+        elif sd["confidence"] < conf_mid * self.MAX_CONF:
             recs.append(
                 "🟡 **Confidence Quality** is moderate. "
                 "Some high-confidence errors detected — inspect borderline cases."

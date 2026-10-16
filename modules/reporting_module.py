@@ -313,9 +313,14 @@ class ReportGenerator:
         )
         return fig
 
-    def plot_reliability_gauge_row(self, report: dict) -> go.Figure | None:
+    def plot_reliability_gauge_row(
+        self, report: dict | list[dict]
+    ) -> go.Figure | None:
         """Subplot of indicator gauges, one per model."""
-        rows = report["reliability"]
+        if isinstance(report, dict):
+            rows = report.get("reliability", [])
+        else:
+            rows = report
         if not rows:
             return None
 
@@ -334,11 +339,18 @@ class ReportGenerator:
                 r["Grade"] for r in rows
             }
         }
+        def _to_step_color(hex_color: str) -> str:
+            hex_clean = hex_color.lstrip("#")
+            if len(hex_clean) == 6:
+                r, g, b = (int(hex_clean[j : j + 2], 16) for j in (0, 2, 4))
+                return f"rgba({r}, {g}, {b}, 0.22)"
+            return hex_color
+
         thresholds = sorted({t for t, _ in self._reliability.grade_cutoffs} | {0.0, 100.0})
         steps = [
             {
                 "range": [low, high],
-                "color": self._reliability.resolve_grade(low)[1],
+                "color": _to_step_color(self._reliability.resolve_grade(low)[1]),
             }
             for low, high in zip(thresholds[:-1], thresholds[1:], strict=True)
         ]
@@ -366,6 +378,9 @@ class ReportGenerator:
             margin=dict(t=60, b=10, l=20, r=20),
         )
         return fig
+
+    # Alias for plot_reliability_gauge_row
+    plot_gauge_all = plot_reliability_gauge_row
 
     def plot_calibration_bar(self, report: dict) -> go.Figure:
         """Bar chart of ECE per model (lower is better)."""

@@ -37,6 +37,21 @@ from core.model_io import ArtifactRecord, ModelArtifactStore
 
 logger = logging.getLogger(__name__)
 
+LOWER_IS_BETTER_METRICS: frozenset[str] = frozenset({
+    "loss",
+    "log_loss",
+    "ece",
+    "brier_score",
+    "brier",
+    "mse",
+    "mae",
+    "rmse",
+    "error",
+    "error_rate",
+    "drop",
+    "performance_drop",
+})
+
 
 class ModelTrainer:
     """Manages training and evaluation of baseline ML models"""
@@ -155,6 +170,60 @@ class ModelTrainer:
 
         return predictions, probabilities
 
+    def supports_probabilities(self, model_name: str) -> bool:
+        """Return True if model is trained and its estimator supports predict_proba.
+
+        Raises:
+            ModelNotTrainedError: If model_name has not been trained.
+        """
+        if model_name not in self.trained_models:
+            raise ModelNotTrainedError(
+                f"Model {model_name!r} has not been trained.",
+                context={"model_name": model_name},
+            )
+        model = self.trained_models[model_name]
+        return hasattr(model, "predict_proba") and callable(getattr(model, "predict_proba", None))
+
+    def get_classes(self, model_name: str) -> np.ndarray | None:
+        """Return classes_ array for the named model, or None if classes_ is absent.
+
+        Raises:
+            ModelNotTrainedError: If model_name has not been trained.
+        """
+        if model_name not in self.trained_models:
+            raise ModelNotTrainedError(
+                f"Model {model_name!r} has not been trained.",
+                context={"model_name": model_name},
+            )
+        model = self.trained_models[model_name]
+        classes = getattr(model, "classes_", None)
+        return np.asarray(classes) if classes is not None else None
+
+    def get_class_names(self, model_name: str) -> list[str] | None:
+        """Return string class labels for the named model, or None if classes_ is absent.
+
+        Raises:
+            ModelNotTrainedError: If model_name has not been trained.
+        """
+        classes = self.get_classes(model_name)
+        if classes is None:
+            return None
+        return [str(c) for c in classes]
+
+    def supports_feature_importance(self, model_name: str) -> bool:
+        """Return True if model is trained and exposes feature_importances_.
+
+        Raises:
+            ModelNotTrainedError: If model_name has not been trained.
+        """
+        if model_name not in self.trained_models:
+            raise ModelNotTrainedError(
+                f"Model {model_name!r} has not been trained.",
+                context={"model_name": model_name},
+            )
+        model = self.trained_models[model_name]
+        return hasattr(model, "feature_importances_")
+
     def evaluate_model(
         self,
         model_name: str,
@@ -205,7 +274,7 @@ class ModelTrainer:
 
     def get_classification_report(
         self, model_name: str, dataset_name: str = "Test"
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         """
         Get detailed classification report
 
@@ -215,12 +284,23 @@ class ModelTrainer:
 
         Returns:
             Classification report as dict
+
+        Raises:
+            ModelNotTrainedError: If model or dataset evaluation metrics are not found.
         """
+        if model_name not in self.trained_models and model_name not in self.metrics:
+            raise ModelNotTrainedError(
+                f"Model {model_name!r} has not been trained.",
+                context={"model_name": model_name},
+            )
         if (
             model_name not in self.metrics
             or dataset_name not in self.metrics[model_name]
         ):
-            return None
+            raise ModelNotTrainedError(
+                f"No evaluated metrics found for model {model_name!r} on dataset {dataset_name!r}.",
+                context={"model_name": model_name, "dataset_name": dataset_name},
+            )
 
         metrics = self.metrics[model_name][dataset_name]
         y_true = metrics["true_labels"]
@@ -233,7 +313,7 @@ class ModelTrainer:
 
     def plot_confusion_matrix(
         self, model_name: str, dataset_name: str = "Test"
-    ) -> go.Figure | None:
+    ) -> go.Figure:
         """
         Create interactive confusion matrix plot
 
@@ -243,12 +323,23 @@ class ModelTrainer:
 
         Returns:
             Plotly figure
+
+        Raises:
+            ModelNotTrainedError: If model or dataset evaluation metrics are not found.
         """
+        if model_name not in self.trained_models and model_name not in self.metrics:
+            raise ModelNotTrainedError(
+                f"Model {model_name!r} has not been trained.",
+                context={"model_name": model_name},
+            )
         if (
             model_name not in self.metrics
             or dataset_name not in self.metrics[model_name]
         ):
-            return None
+            raise ModelNotTrainedError(
+                f"No evaluated metrics found for model {model_name!r} on dataset {dataset_name!r}.",
+                context={"model_name": model_name, "dataset_name": dataset_name},
+            )
 
         cm = self.metrics[model_name][dataset_name]["confusion_matrix"]
 
@@ -281,7 +372,7 @@ class ModelTrainer:
 
     def plot_metrics_comparison(
         self, dataset_name: str = "Test"
-    ) -> go.Figure | None:
+    ) -> go.Figure:
         """
         Compare metrics across all trained models
 
@@ -290,9 +381,24 @@ class ModelTrainer:
 
         Returns:
             Plotly figure
+
+        Raises:
+            ModelNotTrainedError: If no models have been evaluated on dataset_name.
         """
         if not self.metrics:
-            return None
+            raise ModelNotTrainedError(
+                "No trained models with evaluation metrics found.",
+                context={"dataset_name": dataset_name},
+            )
+
+        matching_models = [
+            m for m in self.metrics if dataset_name in self.metrics[m]
+        ]
+        if not matching_models:
+            raise ModelNotTrainedError(
+                f"No evaluated metrics found for dataset {dataset_name!r}.",
+                context={"dataset_name": dataset_name},
+            )
 
         models = []
         accuracy = []
@@ -300,14 +406,13 @@ class ModelTrainer:
         recall = []
         f1 = []
 
-        for model_name in self.metrics:
-            if dataset_name in self.metrics[model_name]:
-                models.append(model_name)
-                metrics = self.metrics[model_name][dataset_name]
-                accuracy.append(metrics["accuracy"])
-                precision.append(metrics["precision"])
-                recall.append(metrics["recall"])
-                f1.append(metrics["f1"])
+        for model_name in matching_models:
+            models.append(model_name)
+            metrics = self.metrics[model_name][dataset_name]
+            accuracy.append(metrics["accuracy"])
+            precision.append(metrics["precision"])
+            recall.append(metrics["recall"])
+            f1.append(metrics["f1"])
 
         # Create grouped bar chart
         fig = go.Figure(
@@ -333,7 +438,7 @@ class ModelTrainer:
 
     def get_feature_importance(
         self, model_name: str, feature_names: list[str]
-    ) -> pd.DataFrame | None:
+    ) -> pd.DataFrame:
         """
         Get feature importance for tree-based models
 
@@ -343,17 +448,40 @@ class ModelTrainer:
 
         Returns:
             DataFrame with feature importance
+
+        Raises:
+            ModelNotTrainedError: If model_name has not been trained.
+            ValidationError: If model does not support feature importances or feature lengths mismatch.
         """
         if model_name not in self.trained_models:
-            return None
+            raise ModelNotTrainedError(
+                f"Model {model_name!r} has not been trained.",
+                context={"model_name": model_name},
+            )
 
         model = self.trained_models[model_name]
 
         # Check if model has feature_importances_
         if not hasattr(model, "feature_importances_"):
-            return None
+            raise ValidationError(
+                f"Model {model_name!r} does not support feature importances.",
+                field="model_name",
+                value=model_name,
+                context={"model_name": model_name},
+            )
 
         importances = model.feature_importances_
+        if len(feature_names) != len(importances):
+            raise ValidationError(
+                f"Length of feature_names ({len(feature_names)}) does not match "
+                f"model feature importances ({len(importances)}).",
+                field="feature_names",
+                context={
+                    "feature_names_len": len(feature_names),
+                    "importances_len": len(importances),
+                },
+            )
+
         importance_df = pd.DataFrame(
             {"Feature": feature_names, "Importance": importances}
         ).sort_values("Importance", ascending=False)
@@ -362,7 +490,7 @@ class ModelTrainer:
 
     def plot_feature_importance(
         self, model_name: str, feature_names: list[str], top_n: int = 10
-    ) -> go.Figure | None:
+    ) -> go.Figure:
         """
         Plot feature importance
 
@@ -373,11 +501,20 @@ class ModelTrainer:
 
         Returns:
             Plotly figure
-        """
-        importance_df = self.get_feature_importance(model_name, feature_names)
 
-        if importance_df is None:
-            return None
+        Raises:
+            ModelNotTrainedError: If model_name has not been trained.
+            ValidationError: If top_n is invalid or model does not support feature importances.
+        """
+        if top_n <= 0:
+            raise ValidationError(
+                f"top_n must be a positive integer, got {top_n}.",
+                field="top_n",
+                value=top_n,
+                context={"top_n": top_n},
+            )
+
+        importance_df = self.get_feature_importance(model_name, feature_names)
 
         # Get top N features
         top_features = importance_df.head(top_n)
@@ -530,13 +667,19 @@ class ModelTrainer:
         self._store.delete(Path(filepath).name)
 
     def get_best_model(
-        self, metric: str = "Accuracy", dataset_name: str = "Test"
+        self,
+        metric: str = "Accuracy",
+        dataset_name: str = "Test",
+        *,
+        lower_is_better: bool | None = None,
     ) -> tuple[str, float]:
         """Identify the best-performing model for a given metric and dataset.
 
         Args:
-            metric: Evaluation metric name (e.g. "Accuracy", "F1 Score").
+            metric: Evaluation metric name (e.g. "Accuracy", "loss", "ECE").
             dataset_name: Dataset split ("Train", "Validation", "Test").
+            lower_is_better: Whether lower values represent better performance.
+                If None, inferred from :data:`LOWER_IS_BETTER_METRICS`.
 
         Returns:
             tuple[str, float]: (best_model_name, best_score).
@@ -563,7 +706,17 @@ class ModelTrainer:
                 context={"dataset_name": dataset_name, "metric": metric},
             )
 
-        best_score = float("-inf")
+        # Determine metric polarity
+        if lower_is_better is None:
+            metric_clean = metric.strip().lower().replace(" ", "_").replace("-", "_")
+            invert = (
+                metric.strip().lower() in LOWER_IS_BETTER_METRICS
+                or metric_clean in LOWER_IS_BETTER_METRICS
+            )
+        else:
+            invert = bool(lower_is_better)
+
+        best_score = float("inf") if invert else float("-inf")
         best_model: str | None = None
 
         for name, dmetrics in matching_models.items():
@@ -584,9 +737,17 @@ class ModelTrainer:
                 )
 
             score = float(dmetrics[metric_key])
-            if best_model is None or score > best_score:
+            if best_model is None:
                 best_score = score
                 best_model = name
+            elif invert:
+                if score < best_score:
+                    best_score = score
+                    best_model = name
+            else:
+                if score > best_score:
+                    best_score = score
+                    best_model = name
 
         if best_model is None:  # pragma: no cover - guarded by matching_models check
             raise ModelNotTrainedError(
@@ -599,7 +760,7 @@ class ModelTrainer:
 
     def get_probability_distribution(
         self, model_name: str, dataset_name: str = "Test"
-    ) -> np.ndarray | None:
+    ) -> np.ndarray:
         """
         Get probability distribution for predictions
 
@@ -609,14 +770,32 @@ class ModelTrainer:
 
         Returns:
             Probabilities array
+
+        Raises:
+            ModelNotTrainedError: If model or dataset evaluation metrics are not found.
+            ModelPredictionError: If probability predictions are absent.
         """
+        if model_name not in self.trained_models and model_name not in self.metrics:
+            raise ModelNotTrainedError(
+                f"Model {model_name!r} has not been trained.",
+                context={"model_name": model_name},
+            )
         if (
             model_name not in self.metrics
             or dataset_name not in self.metrics[model_name]
         ):
-            return None
+            raise ModelNotTrainedError(
+                f"No evaluated metrics found for model {model_name!r} on dataset {dataset_name!r}.",
+                context={"model_name": model_name, "dataset_name": dataset_name},
+            )
 
-        return self.metrics[model_name][dataset_name]["probabilities"]
+        probs = self.metrics[model_name][dataset_name].get("probabilities")
+        if probs is None:
+            raise ModelPredictionError(
+                f"Model {model_name!r} does not have probability predictions for dataset {dataset_name!r}.",
+                context={"model_name": model_name, "dataset_name": dataset_name},
+            )
+        return probs
 
     def get_model_summary(self) -> pd.DataFrame:
         """

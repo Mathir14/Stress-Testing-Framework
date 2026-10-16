@@ -81,7 +81,7 @@ def render(ctx: AppContext) -> None:
             calibration_ece=rep_cal_ece or None,
             entropy_data=mean_entropies(evidence) or None,
             hce_data=hce_rates(evidence) or None,
-            n_classes=class_count(evidence),
+            n_classes=class_count(evidence, strict=True),
         )
 
         # ── Compile report ────────────────────────────────────────────────

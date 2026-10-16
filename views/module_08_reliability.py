@@ -78,7 +78,7 @@ def render(ctx: AppContext) -> None:
             calibration_ece=calibration_ece(evidence) or None,
             entropy_data=mean_entropies(evidence) or None,
             hce_data=hce_rates(evidence) or None,
-            n_classes=class_count(evidence),
+            n_classes=class_count(evidence, strict=True),
         )
 
         if not scores_dict:

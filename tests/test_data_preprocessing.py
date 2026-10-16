@@ -452,6 +452,21 @@ def test_scale_features_validates_numeric_and_synchronizes_state(manager: DataMa
     pd.testing.assert_frame_equal(manager.X_test, scaled_test)
 
 
+def test_scale_features_synchronizes_partial_splits_clearing_stale(manager: DataManager):
+    """Calling scale_features with partial splits clears stale unscaled state from self.X_val and self.X_test."""
+    manager.X_val = pd.DataFrame({"num": [999.0]})
+    manager.X_test = pd.DataFrame({"num": [888.0]})
+
+    train_df = pd.DataFrame({"num": [1.0, 2.0, 3.0]})
+    scaled_train, scaled_val, scaled_test = manager.scale_features(train_df)
+
+    assert scaled_val is None
+    assert scaled_test is None
+    assert manager.X_val is None
+    assert manager.X_test is None
+    pd.testing.assert_frame_equal(manager.X_train, scaled_train)
+
+
 def test_get_split_summary_raises_when_unprepared(manager: DataManager):
     """§9 item 2: the pre-remediation ``None`` return became a typed error."""
     with pytest.raises(DatasetError):

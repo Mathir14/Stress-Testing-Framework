@@ -402,10 +402,8 @@ class DataManager:
             )
 
         self.X_train = X_train_scaled
-        if X_val_scaled is not None:
-            self.X_val = X_val_scaled
-        if X_test_scaled is not None:
-            self.X_test = X_test_scaled
+        self.X_val = X_val_scaled
+        self.X_test = X_test_scaled
 
         return X_train_scaled, X_val_scaled, X_test_scaled
 
