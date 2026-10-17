@@ -29,7 +29,7 @@ pytest.importorskip("numpy", reason="the comparator needs the scientific stack")
 pytest.importorskip("pandas", reason="the comparator needs the scientific stack")
 pytest.importorskip("plotly", reason="the comparator's figures need the scientific stack")
 
-from core.config import ScoringPolicy, get_config
+from core.config import ReliabilityWeights, ScoringPolicy, get_config
 from core.errors import ValidationError
 from modules.comparison_module import ModelComparator
 
@@ -441,3 +441,41 @@ def test_performance_component_uses_the_shared_transform(comparator: ModelCompar
     assert assessment["components"]["performance"] == pytest.approx(
         performance_fraction(0.8, 0.6) * 100.0
     )
+
+
+def test_plot_robustness_comparison_uses_reliability_weights_palette():
+    """plot_robustness_comparison derives bar colors from ReliabilityWeights.resolve_grade."""
+    comparator = ModelComparator()
+    scores = {"M_high": 95.0, "M_mid": 75.0, "M_low": 35.0}
+    fig = comparator.plot_robustness_comparison(scores)
+
+    expected_colors = [comparator.weights.resolve_grade(s)[1] for s in scores.values()]
+    assert list(fig.data[0].marker.color) == expected_colors
+
+    # Injected custom weights palette is respected
+    custom_weights = ReliabilityWeights(
+        grade_colours=(
+            (90.0, "#111111"),
+            (80.0, "#222222"),
+            (70.0, "#333333"),
+            (60.0, "#444444"),
+            (50.0, "#555555"),
+            (0.0, "#999999"),
+        )
+    )
+    custom_comp = ModelComparator(weights=custom_weights)
+    custom_fig = custom_comp.plot_robustness_comparison(scores)
+    custom_expected = [custom_weights.resolve_grade(s)[1] for s in scores.values()]
+    assert list(custom_fig.data[0].marker.color) == custom_expected
+
+
+def test_plot_composite_scores_uses_reliability_weights_palette():
+    """plot_composite_scores derives bar colors from ReliabilityWeights.resolve_grade in sorted order."""
+    comparator = ModelComparator()
+    scores = {"M_low": 42.0, "M_high": 88.0, "M_fail": 20.0}
+    fig = comparator.plot_composite_scores(scores)
+
+    # plot_composite_scores sorts descending by score: M_high (88.0), M_low (42.0), M_fail (20.0)
+    sorted_scores = [88.0, 42.0, 20.0]
+    expected_colors = [comparator.weights.resolve_grade(s)[1] for s in sorted_scores]
+    assert list(fig.data[0].marker.color) == expected_colors

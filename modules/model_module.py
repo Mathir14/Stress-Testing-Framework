@@ -7,6 +7,7 @@ Models: Logistic Regression, Random Forest, XGBoost
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 from typing import Any
 
@@ -740,14 +741,18 @@ class ModelTrainer:
             if best_model is None:
                 best_score = score
                 best_model = name
-            elif invert:
-                if score < best_score:
-                    best_score = score
-                    best_model = name
-            else:
-                if score > best_score:
-                    best_score = score
-                    best_model = name
+            elif math.isnan(best_score) and not math.isnan(score):
+                best_score = score
+                best_model = name
+            elif not math.isnan(score):
+                if invert:
+                    if score < best_score:
+                        best_score = score
+                        best_model = name
+                else:
+                    if score > best_score:
+                        best_score = score
+                        best_model = name
 
         if best_model is None:  # pragma: no cover - guarded by matching_models check
             raise ModelNotTrainedError(

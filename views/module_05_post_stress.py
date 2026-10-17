@@ -112,21 +112,22 @@ def render(ctx: AppContext) -> None:
                         # Score interpretation
                         st.subheader("📖 Score Interpretation")
 
-                        if score >= 80:
+                        recommendation = post_stress_analyzer.policy.resolve_recommendation(score)
+                        if recommendation == "Excellent":
                             st.success(
                                 "🌟 **Excellent Robustness** - Model performs very well under stress"
                             )
-                        elif score >= 60:
+                        elif recommendation == "Good":
                             st.info(
                                 "✅ **Good Robustness** - Model handles most stress conditions well"
                             )
-                        elif score >= 40:
+                        elif recommendation == "Moderate":
                             st.warning(
                                 "⚠️ **Moderate Robustness** - Model shows some vulnerabilities"
                             )
                         else:
                             st.error(
-                                "❌ **Low Robustness** - Model is highly sensitive to perturbations"
+                                f"❌ **{recommendation} Robustness** - Model is highly sensitive to perturbations"
                             )
 
                         # Radar chart

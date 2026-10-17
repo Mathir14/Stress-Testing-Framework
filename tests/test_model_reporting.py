@@ -219,6 +219,52 @@ def test_get_best_model_metric_polarity_minimization_and_explicit_flag():
     assert best_score == 0.50
 
 
+def test_get_best_model_nan_hardening():
+    """get_best_model prioritizes finite scores over NaN values and falls back safely if all NaN."""
+    import math
+
+    trainer = ModelTrainer()
+
+    # 1. First model evaluates to NaN, second to finite (maximization)
+    trainer.metrics = {
+        "m_nan": {"Test": {"accuracy": float("nan")}},
+        "m_valid": {"Test": {"accuracy": 0.85}},
+    }
+    best_name, best_score = trainer.get_best_model("accuracy", "Test")
+    assert best_name == "m_valid"
+    assert best_score == 0.85
+
+    # 2. Minimization: first model NaN, second and third finite
+    trainer.metrics = {
+        "m_nan": {"Test": {"loss": float("nan")}},
+        "m_mid": {"Test": {"loss": 0.45}},
+        "m_best": {"Test": {"loss": 0.15}},
+    }
+    best_name, best_score = trainer.get_best_model("loss", "Test")
+    assert best_name == "m_best"
+    assert best_score == 0.15
+
+    # 3. Intermediate NaN does not poison subsequent finite comparisons
+    trainer.metrics = {
+        "m_first": {"Test": {"accuracy": 0.75}},
+        "m_nan": {"Test": {"accuracy": float("nan")}},
+        "m_best": {"Test": {"accuracy": 0.95}},
+    }
+    best_name, best_score = trainer.get_best_model("accuracy", "Test")
+    assert best_name == "m_best"
+    assert best_score == 0.95
+
+    # 4. All models evaluate to NaN: fallback to first model without error
+    trainer.metrics = {
+        "m_nan1": {"Test": {"accuracy": float("nan")}},
+        "m_nan2": {"Test": {"accuracy": float("nan")}},
+    }
+    best_name, best_score = trainer.get_best_model("accuracy", "Test")
+    assert best_name == "m_nan1"
+    assert math.isnan(best_score)
+
+
+
 def test_model_trainer_capability_introspection():
     """supports_probabilities, get_classes, get_class_names, supports_feature_importance work as expected."""
     from core.errors import ModelNotTrainedError

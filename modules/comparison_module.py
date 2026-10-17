@@ -255,10 +255,7 @@ class ModelComparator:
         """Horizontal bar chart of robustness scores."""
         models = list(robustness_scores.keys())
         scores = [robustness_scores[m] for m in models]
-        colors = [
-            "#2ECC71" if s >= 70 else "#F39C12" if s >= 40 else "#E74C3C"
-            for s in scores
-        ]
+        colors = [self.weights.resolve_grade(s)[1] for s in scores]
 
         fig = go.Figure(
             go.Bar(
@@ -283,10 +280,7 @@ class ModelComparator:
         sorted_items = sorted(composite.items(), key=lambda x: x[1], reverse=True)
         models = [i[0] for i in sorted_items]
         scores = [i[1] for i in sorted_items]
-        colors = [
-            "#2ECC71" if s >= 70 else "#F39C12" if s >= 40 else "#E74C3C"
-            for s in scores
-        ]
+        colors = [self.weights.resolve_grade(s)[1] for s in scores]
 
         fig = go.Figure(
             go.Bar(

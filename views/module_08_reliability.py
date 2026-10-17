@@ -213,10 +213,10 @@ def render(ctx: AppContext) -> None:
                     st.markdown(f"### Grade: **{sd['grade']}**")
                     st.markdown(f"**Total Score:** {sd['total']} / 100")
                     st.markdown("---")
-                    st.markdown(f"- 🎯 Performance:  **{sd['performance']:.1f}** / 25")
-                    st.markdown(f"- 📐 Calibration:  **{sd['calibration']:.1f}** / 25")
-                    st.markdown(f"- 🛡️ Robustness:   **{sd['robustness']:.1f}** / 25")
-                    st.markdown(f"- 🔮 Confidence:   **{sd['confidence']:.1f}** / 25")
+                    st.markdown(f"- 🎯 Performance:  **{sd['performance']:.1f}** / {scorer.MAX_PERF:g}")
+                    st.markdown(f"- 📐 Calibration:  **{sd['calibration']:.1f}** / {scorer.MAX_CAL:g}")
+                    st.markdown(f"- 🛡️ Robustness:   **{sd['robustness']:.1f}** / {scorer.MAX_ROB:g}")
+                    st.markdown(f"- 🔮 Confidence:   **{sd['confidence']:.1f}** / {scorer.MAX_CONF:g}")
 
                     if sd["missing_components"]:
                         st.warning(

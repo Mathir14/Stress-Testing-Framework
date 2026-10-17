@@ -210,9 +210,7 @@ def render(ctx: AppContext) -> None:
                             {
                                 "Model": m,
                                 "Robustness Score": f"{s:.1f} / 100",
-                                "Rating": (
-                                    "✅ High" if s >= 70 else "⚠️ Medium" if s >= 40 else "❌ Low"
-                                ),
+                                "Rating": comparator.weights.resolve_grade(s)[0],
                             }
                             for m, s in sorted(
                                 robustness_scores.items(),
@@ -318,16 +316,29 @@ def render(ctx: AppContext) -> None:
 
                     # Composite score breakdown
                     st.markdown("### 📖 Score Breakdown")
-                    st.markdown(
-                        """
-| Component | Weight | Source |
-|-----------|--------|--------|
-| Performance (Accuracy + F1) | 50 % | Module 2 evaluation |
-| Stress Robustness | 25 % | Module 4 batch test |
-| Calibration (1 – ECE) | 25 % | Computed from test predictions |
+                    component_labels = {
+                        "performance": ("Performance (Accuracy + F1)", "Module 2 evaluation"),
+                        "robustness": ("Stress Robustness", "Module 4 batch test"),
+                        "calibration": ("Calibration (1 – ECE)", "Computed from test predictions"),
+                    }
+                    rows = []
+                    for comp, wt in comparator.policy.composite_weights:
+                        label, source = component_labels.get(
+                            comp, (comp.title(), "Configured component")
+                        )
+                        rows.append(f"| {label} | {wt * 100:g} % | {source} |")
+                    table_rows = "\n".join(rows)
+                    missing_pts = comparator.policy.missing_component_points
+                    min_comp = comparator.policy.min_measured_components
 
-> A component that could not be measured scores **0 pts** with no weight
-> redistribution. A model with fewer than two measured components is
+                    st.markdown(
+                        f"""
+| Component | Weight | Source |
+|---|---|---|
+{table_rows}
+
+> A component that could not be measured scores **{missing_pts:g} pts** with no weight
+> redistribution. A model with fewer than {min_comp} measured components is
 > **unrated** and excluded from the ranking.
                         """
                     )
