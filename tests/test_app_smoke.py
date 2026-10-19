@@ -869,6 +869,33 @@ def test_every_newly_guarded_button_runs(page_key: str, label: str) -> None:
     _assert_clean(app, f"pressing {label!r} on {page_key!r}", baseline=before)
 
 
+def test_load_model_failure_during_evaluation_leaves_model_trained_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If evaluation fails after load_model, MODEL_TRAINED remains False (transactional)."""
+    from core.errors import ModelPredictionError
+
+    seeded = _prepared_state_with_a_saved_artifact()
+    seeded[StateKeys.MODEL_TRAINED] = False
+
+    def _fail_eval(*args: object, **kwargs: object) -> None:
+        raise ModelPredictionError("Evaluation inference failed", context={"stage": "evaluation"})
+
+    app = _on_page(PAGE_KEYS[1], seeded)
+    trainer = app.session_state[StateKeys.MODEL_TRAINER]
+    monkeypatch.setattr(trainer, "evaluate_model", _fail_eval)
+
+    button = next((b for b in app.button if b.label == "📂 Load Model"), None)
+    assert button is not None, "Load Model button is absent from Baseline page"
+
+    button.click().run()
+
+    assert app.session_state[StateKeys.MODEL_TRAINED] is False, (
+        "MODEL_TRAINED was set to True even though evaluate_model raised ModelPredictionError"
+    )
+    assert app.error, "ModelPredictionError should have been rendered as an error alert"
+
+
 def test_the_train_button_is_guarded_and_runs() -> None:
     """Press the Train button, whose label is an f-string and so not tableable.
 
@@ -1022,6 +1049,7 @@ def test_the_real_upload_path_loads_a_dataset(monkeypatch: pytest.MonkeyPatch) -
     raw = app.session_state[StateKeys.DATA_MANAGER].raw_data
     assert raw is not None, "raw_data is still None after a successful upload"
     assert raw.shape == (4, 3), f"expected the uploaded CSV's (4, 3) shape, got {raw.shape}"
+    assert len(app.dataframe) >= 3, "expected summary tables (preview, columns, statistics) to be rendered"
 
 
 def test_a_malformed_upload_renders_a_dataset_error_not_a_traceback(
@@ -1116,3 +1144,58 @@ def test_pressing_run_batch_stress_produces_results_for_every_registry_key(
         f"batch stress did not dispatch on every registry key; missing "
         f"{sorted(expected - operators)} from {sorted(operators)}"
     )
+
+
+def test_dataset_with_missing_values_splits_and_trains_successfully(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dataset containing missing values is auto-cleaned on split and trains cleanly in Module 2."""
+    csv_bytes = (
+        b"feat_a,feat_b,target\n"
+        b"1.0,,0\n"
+        b",2.0,0\n"
+        b"3.0,3.0,0\n"
+        b"4.0,4.0,0\n"
+        b"5.0,5.0,0\n"
+        b",6.0,0\n"
+        b"7.0,7.0,0\n"
+        b"8.0,,0\n"
+        b"9.0,9.0,0\n"
+        b"10.0,10.0,0\n"
+        b"11.0,11.0,1\n"
+        b"12.0,,1\n"
+        b",13.0,1\n"
+        b"14.0,14.0,1\n"
+        b"15.0,15.0,1\n"
+        b"16.0,16.0,1\n"
+        b"17.0,,1\n"
+        b",18.0,1\n"
+        b"19.0,19.0,1\n"
+        b"20.0,20.0,1\n"
+    )
+    _patched_uploader(monkeypatch, csv_bytes)
+
+    # 1. Load dataset on Module 1
+    app = _run(PAGE_KEYS[0])
+    load_btn = next((b for b in app.button if b.label == "Load Dataset"), None)
+    assert load_btn is not None
+    load_btn.click().run()
+    assert app.session_state[StateKeys.DATA_LOADED] is True
+
+    # 2. Split dataset on Module 1
+    split_btn = next((b for b in app.button if b.label == "Split Dataset"), None)
+    assert split_btn is not None
+    split_btn.click().run()
+    assert app.session_state[StateKeys.DATA_PREPARED] is True
+
+    # 3. Navigate to Module 2 and train Logistic Regression
+    app.sidebar.radio[0].set_value(PAGE_KEYS[1]).run()
+    train_btn = next((b for b in app.button if "Train" in b.label), None)
+    assert train_btn is not None
+    train_btn.click().run()
+
+    assert app.session_state[StateKeys.MODEL_TRAINED] is True
+    success_texts = [s.value for s in app.success]
+    assert any("trained successfully!" in t for t in success_texts)
+
+

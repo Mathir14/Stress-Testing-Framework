@@ -198,18 +198,17 @@ class ReportGenerator:
             rated_rows = [r for r in rel_rows if r["Model"] in rated_models]
             if rated_rows:
                 best_rel = max(rated_rows, key=lambda r: r["Total"])["Model"]
+        robustness_by_model = {
+            m: np.mean([r["Drop"] for r in rob_rows if r["Model"] == m])
+            for m in models
+            if any(r["Model"] == m for r in rob_rows)
+        }
         most_robust = (
-            min(
-                {
-                    m: np.mean([r["Drop"] for r in rob_rows if r["Model"] == m])
-                    for m in models
-                    if any(r["Model"] == m for r in rob_rows)
-                }.items(),
-                key=lambda x: x[1],
-            )[0]
-            if rob_rows
+            min(robustness_by_model.items(), key=lambda x: x[1])[0]
+            if robustness_by_model
             else "N/A"
         )
+
 
         return {
             "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

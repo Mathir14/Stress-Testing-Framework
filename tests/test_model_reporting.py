@@ -32,6 +32,7 @@ pytest.importorskip("xgboost", reason="ModelTrainer pulls the scientific stack")
 pytest.importorskip("plotly", reason="ModelTrainer pulls the scientific stack")
 
 import numpy as np
+import pandas as pd
 
 from core.errors import FrameworkError
 from core.model_io import ArtifactRecord
@@ -343,3 +344,51 @@ def test_model_trainer_query_methods_raise_typed_errors_not_none():
 
     with pytest.raises(ValidationError, match="top_n must be a positive integer"):
         trainer.plot_feature_importance("fi", ["f1", "f2"], top_n=0)
+
+
+def test_get_model_summary_returns_numeric_float_columns() -> None:
+    """get_model_summary returns DataFrames with numeric float64 columns rather than strings."""
+    trainer = ModelTrainer()
+    trainer.metrics = {
+        "Random Forest": {
+            "Test": {
+                "accuracy": 0.923456,
+                "precision": 0.912345,
+                "recall": 0.901234,
+                "f1": 0.890123,
+            }
+        }
+    }
+    df = trainer.get_model_summary()
+    assert not df.empty
+    assert df["Accuracy"].dtype.kind == "f"
+    assert df["Precision"].dtype.kind == "f"
+    assert df["Recall"].dtype.kind == "f"
+    assert df["F1-Score"].dtype.kind == "f"
+    assert df.iloc[0]["Accuracy"] == 0.9235
+    assert df.iloc[0]["Precision"] == 0.9123
+    assert df.iloc[0]["Recall"] == 0.9012
+    assert df.iloc[0]["F1-Score"] == 0.8901
+
+
+def test_train_model_logistic_regression_handles_nan_features() -> None:
+    """Logistic Regression can train and predict on data containing missing values without raising."""
+    trainer = ModelTrainer()
+    X = pd.DataFrame(
+        {
+            "a": [1.0, np.nan, 3.0, 4.0, 5.0, np.nan, 7.0, 8.0],
+            "b": [np.nan, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+        }
+    )
+    y = pd.Series([0, 0, 0, 0, 1, 1, 1, 1])
+    model = trainer.train_model("Logistic Regression", X, y)
+    assert model is not None
+    assert trainer.supports_probabilities("Logistic Regression")
+    classes = trainer.get_classes("Logistic Regression")
+    assert classes is not None
+    assert list(classes) == [0, 1]
+    metrics = trainer.evaluate_model("Logistic Regression", X, y, "Train")
+    assert "accuracy" in metrics
+    assert metrics["accuracy"] >= 0.0
+
+

@@ -509,10 +509,10 @@ class ModelComparator:
                 rows.append(
                     {
                         "Model": model,
-                        "Accuracy": f"{vals['accuracy']:.4f}",
-                        "Precision": f"{vals['precision']:.4f}",
-                        "Recall": f"{vals['recall']:.4f}",
-                        "F1 Score": f"{vals['f1']:.4f}",
+                        "Accuracy": round(float(vals["accuracy"]), 4),
+                        "Precision": round(float(vals["precision"]), 4),
+                        "Recall": round(float(vals["recall"]), 4),
+                        "F1 Score": round(float(vals["f1"]), 4),
                     }
                 )
         return pd.DataFrame(rows).set_index("Model") if rows else pd.DataFrame()

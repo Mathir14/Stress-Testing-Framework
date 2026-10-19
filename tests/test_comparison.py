@@ -479,3 +479,35 @@ def test_plot_composite_scores_uses_reliability_weights_palette():
     sorted_scores = [88.0, 42.0, 20.0]
     expected_colors = [comparator.weights.resolve_grade(s)[1] for s in sorted_scores]
     assert list(fig.data[0].marker.color) == expected_colors
+
+
+def test_build_comparison_df_preserves_numeric_float_columns() -> None:
+    """build_comparison_df stores metric columns as float64 rather than formatted strings."""
+    comparator = ModelComparator()
+    metrics_dict = {
+        "ModelA": {
+            "has_data": True,
+            "accuracy": 0.88765,
+            "precision": 0.85432,
+            "recall": 0.82345,
+            "f1": 0.83849,
+        },
+        "ModelB": {
+            "has_data": False,
+            "accuracy": 0.0,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+        },
+    }
+    df = comparator.build_comparison_df(metrics_dict)
+    assert not df.empty
+    assert len(df) == 1
+    assert df["Accuracy"].dtype.kind == "f"
+    assert df["Precision"].dtype.kind == "f"
+    assert df["Recall"].dtype.kind == "f"
+    assert df["F1 Score"].dtype.kind == "f"
+    assert df.loc["ModelA", "Accuracy"] == 0.8877
+    assert df.loc["ModelA", "Precision"] == 0.8543
+    assert df.loc["ModelA", "Recall"] == 0.8235
+    assert df.loc["ModelA", "F1 Score"] == 0.8385

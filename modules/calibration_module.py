@@ -13,6 +13,7 @@ silently mis-scoring.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any, Dict, List
 
 import numpy as np
@@ -20,7 +21,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from core.config import ScoringPolicy, get_config
-from core.errors import ValidationError
+from core.errors import ParameterOutOfRangeError, ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -441,6 +442,17 @@ class CalibrationAnalyzer:
         self, probabilities: np.ndarray, temperature: float
     ) -> np.ndarray:
         """Scale probabilities by temperature (>1 softens, <1 sharpens)."""
+        if (
+            isinstance(temperature, bool)
+            or not isinstance(temperature, (int, float))
+            or not math.isfinite(temperature)
+            or temperature <= 0.0
+        ):
+            raise ParameterOutOfRangeError(
+                f"Temperature must be a finite positive number (> 0.0); got {temperature}.",
+                field="temperature",
+                value=temperature,
+            )
         logits = np.log(np.clip(probabilities, 1e-10, 1))
         scaled = logits / temperature
         exp_scaled = np.exp(scaled - scaled.max(axis=1, keepdims=True))

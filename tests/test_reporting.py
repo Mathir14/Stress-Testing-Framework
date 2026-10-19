@@ -175,3 +175,36 @@ def test_plot_gauge_all_uses_translucent_step_bands() -> None:
     assert len(steps) > 0
     for s in steps:
         assert s["color"].startswith("rgba(") and s["color"].endswith(", 0.22)")
+
+
+def test_compile_report_most_robust_returns_na_when_no_robustness_results() -> None:
+    """When models have no robustness measurements, most_robust falls back to 'N/A'."""
+    trainer = _FakeTrainer(["ModelA", "ModelB"])
+    report = ReportGenerator().compile_report(trainer, None, stress_results=None)
+    assert report["summary"]["most_robust"] == "N/A"
+
+
+def test_compile_report_most_robust_computes_model_with_minimum_drop() -> None:
+    """When models have robustness records, most_robust selects the model with lowest average drop."""
+    trainer = _FakeTrainer(["ModelA", "ModelB"])
+    stress_results = {
+        "ModelA": {
+            "noise": {"accuracy_original": 0.9, "accuracy_stressed": 0.7, "performance_drop": 0.2},
+            "dropout": {"accuracy_original": 0.9, "accuracy_stressed": 0.8, "performance_drop": 0.1},
+        },
+        "ModelB": {
+            "noise": {"accuracy_original": 0.9, "accuracy_stressed": 0.85, "performance_drop": 0.05},
+            "dropout": {"accuracy_original": 0.9, "accuracy_stressed": 0.85, "performance_drop": 0.05},
+        },
+    }
+    report = ReportGenerator().compile_report(trainer, None, stress_results=stress_results)
+    assert report["summary"]["most_robust"] == "ModelB"
+
+
+def test_compile_report_most_robust_empty_models_falls_back_to_na() -> None:
+    """When trainer has no models, most_robust returns 'N/A' without raising."""
+    trainer = _FakeTrainer([])
+    report = ReportGenerator().compile_report(trainer, None, stress_results=None)
+    assert report["summary"]["most_robust"] == "N/A"
+
+

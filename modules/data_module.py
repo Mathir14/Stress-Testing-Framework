@@ -320,15 +320,28 @@ class DataManager:
         """
         df_copy = df.copy(deep=True)
 
+        if method not in ("label", "onehot"):
+            raise ValidationError(
+                f"Unsupported encoding method '{method}'. Supported methods are 'label' and 'onehot'.",
+                field="method",
+                value=method,
+            )
+
         if method == "label":
             for col in columns:
-                if col in df_copy.columns and df_copy[col].dtype == "object":
+                if col in df_copy.columns and (
+                    df_copy[col].dtype == "object"
+                    or isinstance(df_copy[col].dtype, pd.CategoricalDtype)
+                    or pd.api.types.is_string_dtype(df_copy[col])
+                ):
                     le = LabelEncoder()
                     df_copy[col] = le.fit_transform(df_copy[col].astype(str))
                     self.label_encoders[col] = le
 
         elif method == "onehot":
-            df_copy = pd.get_dummies(df_copy, columns=columns, drop_first=True)
+            cols_to_encode = [c for c in columns if c in df_copy.columns]
+            if cols_to_encode:
+                df_copy = pd.get_dummies(df_copy, columns=cols_to_encode, drop_first=True)
 
         return df_copy
 

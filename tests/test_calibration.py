@@ -21,6 +21,8 @@ The binding decisions under test:
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 pytest.importorskip("numpy", reason="calibration tests need the scientific stack")
@@ -31,7 +33,7 @@ import numpy as np  # noqa: E402 - after importorskip by design
 import pandas as pd  # noqa: E402 - after importorskip by design
 
 from core.config import ScoringPolicy, get_config
-from core.errors import ValidationError
+from core.errors import ParameterOutOfRangeError, ValidationError
 from modules.calibration_module import CalibrationAnalyzer, align_target_indices, multiclass_brier
 
 
@@ -272,6 +274,21 @@ def test_temperature_scaling_preserves_row_sums(analyzer: CalibrationAnalyzer):
     # Temperature 1.0 is the identity for a valid probability distribution.
     identity = analyzer.apply_temperature_scaling(probs, 1.0)
     assert np.allclose(identity, probs)
+
+
+@pytest.mark.parametrize(
+    "invalid_temp",
+    [0.0, -1.0, -0.5, float("nan"), float("inf"), float("-inf"), True, False, "1.0", None],
+)
+def test_apply_temperature_scaling_rejects_invalid_temperatures(
+    analyzer: CalibrationAnalyzer, invalid_temp: Any
+) -> None:
+    probs = np.array([[0.8, 0.2]])
+    with pytest.raises(ParameterOutOfRangeError) as excinfo:
+        analyzer.apply_temperature_scaling(probs, invalid_temp)
+    assert excinfo.value.field == "temperature"
+    assert "finite positive number" in str(excinfo.value)
+
 
 
 def test_an_overconfident_model_is_softened(analyzer: CalibrationAnalyzer):

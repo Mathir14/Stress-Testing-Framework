@@ -369,6 +369,29 @@ def test_encoding_a_missing_column_is_ignored(manager: DataManager):
     assert list(out.columns) == ["n"]
 
 
+def test_encode_categorical_rejects_unsupported_method(manager: DataManager):
+    frame = pd.DataFrame({"c": ["a", "b"]})
+    with pytest.raises(ValidationError) as excinfo:
+        manager.encode_categorical(frame, ["c"], method="unsupported_method")
+    assert excinfo.value.field == "method"
+    assert "Unsupported encoding method" in str(excinfo.value)
+
+
+def test_encode_categorical_supports_category_and_string_dtypes(manager: DataManager):
+    frame = pd.DataFrame(
+        {
+            "cat": pd.Series(["apple", "banana", "apple"], dtype="category"),
+            "str": pd.Series(["x", "y", "z"], dtype="string"),
+        }
+    )
+    out = manager.encode_categorical(frame, ["cat", "str"], method="label")
+    assert out["cat"].dtype.kind in "iu"
+    assert out["str"].dtype.kind in "iu"
+    assert "cat" in manager.label_encoders
+    assert "str" in manager.label_encoders
+
+
+
 # ── Split / scale behaviour relied on by the smoke test ──────────────────────
 
 

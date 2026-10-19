@@ -340,7 +340,6 @@ def render(ctx: AppContext) -> None:
                             model_trainer.load_model(
                                 model_name_input, selected_file, trust=trust_untrusted
                             )
-                            ctx.store[StateKeys.MODEL_TRAINED] = True
 
                             # Evaluate on all datasets
                             data = data_manager.get_data()
@@ -362,6 +361,7 @@ def render(ctx: AppContext) -> None:
                                     model_name_input, X_test, y_test, "Test"
                                 )
 
+                            ctx.store[StateKeys.MODEL_TRAINED] = True
                             st.success(f"✅ Model '{model_name_input}' loaded and evaluated!")
                         except FrameworkError as exc:
                             # render_error surfaces ArtifactError subclasses distinctly

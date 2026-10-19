@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
@@ -24,6 +25,7 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
 )
+from sklearn.pipeline import Pipeline
 from xgboost import XGBClassifier
 
 from core.config import get_config
@@ -81,10 +83,18 @@ class ModelTrainer:
             Model instance
         """
         if model_name == "Logistic Regression":
-            return LogisticRegression(
-                max_iter=params.get("max_iter", 1000),
-                C=params.get("C", 1.0),
-                random_state=params.get("random_state", 42),
+            return Pipeline(
+                [
+                    ("imputer", SimpleImputer(strategy="mean")),
+                    (
+                        "classifier",
+                        LogisticRegression(
+                            max_iter=params.get("max_iter", 1000),
+                            C=params.get("C", 1.0),
+                            random_state=params.get("random_state", 42),
+                        ),
+                    ),
+                ]
             )
         elif model_name == "Random Forest":
             return RandomForestClassifier(
@@ -818,10 +828,10 @@ class ModelTrainer:
                     {
                         "Model": model_name,
                         "Dataset": dataset,
-                        "Accuracy": f"{metrics['accuracy']:.4f}",
-                        "Precision": f"{metrics['precision']:.4f}",
-                        "Recall": f"{metrics['recall']:.4f}",
-                        "F1-Score": f"{metrics['f1']:.4f}",
+                        "Accuracy": round(float(metrics["accuracy"]), 4),
+                        "Precision": round(float(metrics["precision"]), 4),
+                        "Recall": round(float(metrics["recall"]), 4),
+                        "F1-Score": round(float(metrics["f1"]), 4),
                     }
                 )
 
