@@ -95,7 +95,8 @@ def render(ctx: AppContext) -> None:
         )
         smry = report["summary"]
 
-        # ── KPI cards ─────────────────────────────────────────────────
+        # ── Executive Summary ──────────────────────────────────────────
+        st.subheader("📋 Executive Summary")
         k1, k2, k3, k4, k5 = st.columns(5)
         k1.metric("🧠 Models Trained", smry["num_models"])
         k2.metric("🖥️ Stress Tested", smry["num_stressed"])
@@ -117,6 +118,15 @@ def render(ctx: AppContext) -> None:
 
         # ─── TAB 1: Dashboard ──────────────────────────────────────────
         with tab1:
+            st.subheader("📋 Executive Summary Briefing")
+            st.info(
+                f"**Executive Briefing**: Evaluated {smry['num_models']} model(s) "
+                f"({smry['num_stressed']} stress-tested). "
+                f"Top Performer: **{smry['best_performance']}** | "
+                f"Most Robust: **{smry['most_robust']}** | "
+                f"Best Reliability: **{smry['best_reliability']}**."
+            )
+
             st.subheader("📊 Performance Overview")
             fig_perf = rgen.plot_performance_overview(report)
             st.plotly_chart(fig_perf, width="stretch", key="rep_perf")

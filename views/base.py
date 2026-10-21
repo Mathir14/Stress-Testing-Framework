@@ -92,6 +92,29 @@ def render_sidebar(config: AppConfig | None = None) -> str:
     )
     st.sidebar.markdown("---")
     st.sidebar.info("💡 **Tip:** Complete modules in order for best results")
+
+    # Responsive mobile drawer styling: ensure non-interactive sidebar overlay areas
+    # do not intercept pointer events to main content, while preserving full interactivity
+    # of sidebar navigation controls (DEF-J-05-ELEM-6).
+    st.markdown(
+        """
+        <style>
+        @media (max-width: 768px) {
+            [data-testid="stSidebar"] {
+                pointer-events: none !important;
+            }
+            [data-testid="stSidebar"] [data-testid="stRadio"],
+            [data-testid="stSidebar"] [data-testid="stSidebarCollapseButton"],
+            [data-testid="stSidebar"] button,
+            [data-testid="stSidebar"] input {
+                pointer-events: auto !important;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     return selected
 
 
