@@ -118,7 +118,6 @@ def render(ctx: AppContext) -> None:
 
         # ─── TAB 1: Dashboard ──────────────────────────────────────────
         with tab1:
-            st.subheader("📋 Executive Summary Briefing")
             st.info(
                 f"**Executive Briefing**: Evaluated {smry['num_models']} model(s) "
                 f"({smry['num_stressed']} stress-tested). "

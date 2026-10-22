@@ -100,14 +100,15 @@ def render_sidebar(config: AppConfig | None = None) -> str:
         """
         <style>
         @media (max-width: 768px) {
-            [data-testid="stSidebar"] {
+            [data-testid="stSidebar"][aria-expanded="false"] {
                 pointer-events: none !important;
             }
-            [data-testid="stSidebar"] [data-testid="stRadio"],
-            [data-testid="stSidebar"] [data-testid="stSidebarCollapseButton"],
-            [data-testid="stSidebar"] button,
-            [data-testid="stSidebar"] input {
+            [data-testid="stSidebar"][aria-expanded="true"] {
                 pointer-events: auto !important;
+            }
+            [data-testid="stTabs"] [role="tablist"] {
+                overflow-x: auto !important;
+                flex-wrap: nowrap !important;
             }
         }
         </style>

@@ -31,6 +31,7 @@ __all__ = [
     "UnknownModelError",
     "ModelNotTrainedError",
     "ModelPredictionError",
+    "ModelTrainingError",
     "ReportExportError",
 ]
 
@@ -141,6 +142,10 @@ class ModelNotTrainedError(FrameworkError):
 
 class ModelPredictionError(FrameworkError):
     """A fitted estimator failed during prediction or probability estimation."""
+
+
+class ModelTrainingError(FrameworkError):
+    """An estimator failed during model fitting or training."""
 
 
 class ReportExportError(FrameworkError):
