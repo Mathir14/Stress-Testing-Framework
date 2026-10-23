@@ -61,6 +61,7 @@ class StateKeys:
     MODEL_TRAINED = "model_trained"
 
     # Derived results.
+    VALIDATION_REPORT = "validation_report"
     PREDICTIONS = "predictions"
     SINGLE_STRESS_RESULT = "single_stress_result"
     BATCH_STRESS_RESULTS = "batch_stress_results"
@@ -89,6 +90,7 @@ class StateKeys:
     def derived(cls) -> tuple[str, ...]:
         """Return every derived-result key, in dependency order."""
         return (
+            cls.VALIDATION_REPORT,
             cls.PREDICTIONS,
             cls.SINGLE_STRESS_RESULT,
             cls.BATCH_STRESS_RESULTS,
@@ -224,9 +226,13 @@ class AppContext:
             cleared = StateKeys.derived()
         elif step == 2:
             self.store[StateKeys.MODEL_TRAINED] = False
-            cleared = StateKeys.derived()
+            cleared = tuple(k for k in StateKeys.derived() if k != StateKeys.VALIDATION_REPORT)
         else:
-            cleared = StateKeys.derived()[1:]
+            cleared = tuple(
+                k
+                for k in StateKeys.derived()
+                if k not in (StateKeys.VALIDATION_REPORT, StateKeys.PREDICTIONS)
+            )
 
         for key in cleared:
             self.store[key] = None
