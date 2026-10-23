@@ -208,3 +208,36 @@ def test_compile_report_most_robust_empty_models_falls_back_to_na() -> None:
     assert report["summary"]["most_robust"] == "N/A"
 
 
+def test_compile_report_most_robust_disjoint_models_falls_back_to_na() -> None:
+    """When stress_results contains models disjoint from trainer.trained_models, most_robust returns 'N/A'."""
+    trainer = _FakeTrainer(["ModelX"])
+    stress_results = {
+        "DisjointModel": {
+            "noise": {
+                "accuracy_original": 0.9,
+                "accuracy_stressed": 0.7,
+                "performance_drop": 0.2,
+            }
+        }
+    }
+    report = ReportGenerator().compile_report(trainer, None, stress_results=stress_results)
+    assert report["summary"]["most_robust"] == "N/A"
+    assert report["summary"]["num_stressed"] == 0
+
+
+def test_export_to_html_renders_executive_summary() -> None:
+    """DEF-J-04-TEXT-6: HTML export contains Executive Summary heading."""
+    trainer = _FakeTrainer(["ModelA"])
+    report = ReportGenerator().compile_report(trainer, None)
+    html = ReportGenerator().export_to_html(report)
+    assert "<h2>Executive Summary</h2>" in html
+
+
+def test_export_to_pdf_renders_executive_summary() -> None:
+    """DEF-J-04-TEXT-6: PDF export contains Executive Summary heading."""
+    pytest.importorskip("reportlab")
+    trainer = _FakeTrainer(["ModelA"])
+    report = ReportGenerator().compile_report(trainer, None)
+    pdf_bytes = ReportGenerator().export_to_pdf(report)
+    assert pdf_bytes.startswith(b"%PDF")
+

@@ -34,7 +34,7 @@ pytest.importorskip("plotly", reason="ModelTrainer pulls the scientific stack")
 import numpy as np
 import pandas as pd
 
-from core.errors import FrameworkError
+from core.errors import FrameworkError, ModelTrainingError, ValidationError
 from core.model_io import ArtifactRecord
 from modules.model_module import ModelTrainer
 
@@ -371,24 +371,169 @@ def test_get_model_summary_returns_numeric_float_columns() -> None:
     assert df.iloc[0]["F1-Score"] == 0.8901
 
 
-def test_train_model_logistic_regression_handles_nan_features() -> None:
-    """Logistic Regression can train and predict on data containing missing values without raising."""
+def test_train_model_rejects_nan_and_inf_features() -> None:
+    """train_model raises ValidationError when features or labels contain NaN or inf."""
     trainer = ModelTrainer()
-    X = pd.DataFrame(
+    X_nan = pd.DataFrame(
         {
             "a": [1.0, np.nan, 3.0, 4.0, 5.0, np.nan, 7.0, 8.0],
             "b": [np.nan, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
         }
     )
     y = pd.Series([0, 0, 0, 0, 1, 1, 1, 1])
-    model = trainer.train_model("Logistic Regression", X, y)
+    with pytest.raises(ValidationError, match="contains missing values"):
+        trainer.train_model("Logistic Regression", X_nan, y)
+    with pytest.raises(ValidationError, match="contains missing values"):
+        trainer.train_model("Random Forest", X_nan, y)
+    with pytest.raises(ValidationError, match="contains missing values"):
+        trainer.train_model("XGBoost", X_nan, y)
+
+    X_inf = pd.DataFrame(
+        {
+            "a": [1.0, np.inf, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            "b": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+        }
+    )
+    with pytest.raises(ValidationError, match="contains non-finite values"):
+        trainer.train_model("Logistic Regression", X_inf, y)
+
+    X_clean = pd.DataFrame(
+        {
+            "a": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            "b": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+        }
+    )
+    y_nan = pd.Series([0, 0, np.nan, 0, 1, 1, 1, 1])
+    with pytest.raises(ValidationError, match="contains missing values"):
+        trainer.train_model("Logistic Regression", X_clean, y_nan)
+
+    y_inf = pd.Series([0, 0, np.inf, 0, 1, 1, 1, 1])
+    with pytest.raises(ValidationError, match="contains non-finite values"):
+        trainer.train_model("Logistic Regression", X_clean, y_inf)
+
+
+def test_train_model_with_string_and_categorical_ndarray_target() -> None:
+    """train_model accepts string/object ndarray targets without TypeError and rejects object NaNs."""
+    trainer = ModelTrainer()
+    X_clean = np.array(
+        [
+            [1.0, 2.0],
+            [2.0, 3.0],
+            [3.0, 4.0],
+            [4.0, 5.0],
+            [5.0, 6.0],
+            [6.0, 7.0],
+            [7.0, 8.0],
+            [8.0, 9.0],
+        ]
+    )
+    # String targets (non-numeric dtype)
+    y_str = np.array(["cat", "cat", "cat", "cat", "dog", "dog", "dog", "dog"])
+    model = trainer.train_model("Logistic Regression", X_clean, y_str)
     assert model is not None
-    assert trainer.supports_probabilities("Logistic Regression")
-    classes = trainer.get_classes("Logistic Regression")
-    assert classes is not None
-    assert list(classes) == [0, 1]
-    metrics = trainer.evaluate_model("Logistic Regression", X, y, "Train")
-    assert "accuracy" in metrics
-    assert metrics["accuracy"] >= 0.0
+
+    # Object target with missing value
+    y_obj_nan = np.array(["cat", None, "cat", "cat", "dog", "dog", "dog", "dog"], dtype=object)
+    with pytest.raises(ValidationError, match="contains missing values"):
+        trainer.train_model("Logistic Regression", X_clean, y_obj_nan)
+
+    # Object X_train with missing value
+    X_obj_nan = np.array(
+        [
+            [1.0, None],
+            [2.0, 3.0],
+            [3.0, 4.0],
+            [4.0, 5.0],
+            [5.0, 6.0],
+            [6.0, 7.0],
+            [7.0, 8.0],
+            [8.0, 9.0],
+        ],
+        dtype=object,
+    )
+    with pytest.raises(ValidationError, match="contains missing values"):
+        trainer.train_model("Logistic Regression", X_obj_nan, y_str)
+
+
+def test_train_model_rejects_non_numeric_features_dataframe() -> None:
+    """train_model raises ValidationError(field="X_train") when X_train is a DataFrame with non-numeric columns."""
+    trainer = ModelTrainer()
+    X_str = pd.DataFrame(
+        {
+            "num": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            "cat": ["a", "b", "a", "b", "a", "b", "a", "b"],
+        }
+    )
+    y = pd.Series([0, 1, 0, 1, 0, 1, 0, 1])
+    with pytest.raises(ValidationError, match="contains non-numeric columns") as exc_info:
+        trainer.train_model("Logistic Regression", X_str, y)
+    assert exc_info.value.field == "X_train"
+    assert exc_info.value.context["non_numeric_columns"] == ["cat"]
+
+
+def test_train_model_rejects_non_numeric_features_ndarray() -> None:
+    """train_model raises ValidationError(field="X_train") when X_train is an ndarray of non-numeric dtype."""
+    trainer = ModelTrainer()
+    X_str = np.array(
+        [
+            ["1.0", "cat"],
+            ["2.0", "dog"],
+            ["3.0", "cat"],
+            ["4.0", "dog"],
+            ["5.0", "cat"],
+            ["6.0", "dog"],
+            ["7.0", "cat"],
+            ["8.0", "dog"],
+        ]
+    )
+    y = np.array([0, 1, 0, 1, 0, 1, 0, 1])
+    with pytest.raises(ValidationError, match="non-numeric") as exc_info:
+        trainer.train_model("Logistic Regression", X_str, y)
+    assert exc_info.value.field == "X_train"
+
+
+def test_train_model_wraps_estimator_fit_exception_in_model_training_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """train_model catches estimator fit exceptions and raises ModelTrainingError with context."""
+    from sklearn.linear_model import LogisticRegression
+
+    trainer = ModelTrainer()
+    X = pd.DataFrame({"a": [1.0, 2.0, 3.0, 4.0], "b": [5.0, 6.0, 7.0, 8.0]})
+    y = pd.Series([0, 1, 0, 1])
+
+    def failing_fit(self, X, y):
+        raise ValueError("simulated solver failure")
+
+    monkeypatch.setattr(LogisticRegression, "fit", failing_fit)
+
+    with pytest.raises(ModelTrainingError, match="Model training failed for 'Logistic Regression'") as exc_info:
+        trainer.train_model("Logistic Regression", X, y)
+
+    assert exc_info.value.context["model_name"] == "Logistic Regression"
+    assert "simulated solver failure" in exc_info.value.context["error"]
+
+
+def test_train_model_passes_through_framework_error_during_fit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """train_model re-raises FrameworkError without wrapping it in ModelTrainingError."""
+    from sklearn.linear_model import LogisticRegression
+
+    trainer = ModelTrainer()
+    X = pd.DataFrame({"a": [1.0, 2.0, 3.0, 4.0], "b": [5.0, 6.0, 7.0, 8.0]})
+    y = pd.Series([0, 1, 0, 1])
+
+    def failing_fit(self, X, y):
+        raise ValidationError("deliberate framework error during fit", field="solver")
+
+    monkeypatch.setattr(LogisticRegression, "fit", failing_fit)
+
+    with pytest.raises(ValidationError, match="deliberate framework error during fit") as exc_info:
+        trainer.train_model("Logistic Regression", X, y)
+
+    assert exc_info.value.field == "solver"
+
+
 
 

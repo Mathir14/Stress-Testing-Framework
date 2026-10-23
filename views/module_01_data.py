@@ -26,13 +26,13 @@ def render(ctx: AppContext) -> None:
     st.markdown("**Purpose:** Prepare dataset for modeling")
 
     # Create tabs for different data operations
-    tab1, tab5, tab2, tab3, tab4 = st.tabs(
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(
         [
             "📁 Upload Data",
-            "✂️ Train/Val/Test Split",
             "🔍 Validation",
             "🧹 Cleaning",
             "🔄 Encoding & Scaling",
+            "✂️ Train/Val/Test Split",
         ]
     )
 
@@ -52,6 +52,7 @@ def render(ctx: AppContext) -> None:
                     render_error(exc)
                 else:
                     ctx.store[StateKeys.DATA_LOADED] = True
+                    ctx.store[StateKeys.VALIDATION_REPORT] = None
 
         if ctx.store[StateKeys.DATA_LOADED]:
             if data_manager.raw_data is not None:
@@ -63,101 +64,6 @@ def render(ctx: AppContext) -> None:
                 st.dataframe(summary["columns"], width="stretch")
                 st.subheader("📈 Statistical Summary")
                 st.dataframe(summary["statistics"], width="stretch")
-
-    # TAB 5: Train/Val/Test Split
-    with tab5:
-        st.subheader("✂️ Train/Validation/Test Split")
-
-        if data_manager.raw_data is not None:
-            df = data_manager.raw_data
-
-            # Select target column
-            target_col = st.selectbox("Select Target Column:", df.columns.tolist())
-
-            col1, col2, col3 = st.columns(3)
-
-            with col1:
-                test_size = st.slider("Test Set Size", 0.1, 0.3, 0.2, 0.05)
-            with col2:
-                val_size = st.slider("Validation Set Size", 0.05, 0.2, 0.1, 0.05)
-            with col3:
-                default_seed = get_config().random_seed if get_config().random_seed is not None else 42
-                random_state = st.number_input("Random State", 1, 999, default_seed)
-
-            train_size = 1 - test_size - val_size
-
-            # Display split proportions
-            st.write("**Split Proportions:**")
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Train", f"{train_size * 100:.1f}%")
-            col2.metric("Validation", f"{val_size * 100:.1f}%")
-            col3.metric("Test", f"{test_size * 100:.1f}%")
-
-            # Scale features option
-            apply_scaling = st.checkbox("Apply Feature Scaling (StandardScaler)", value=True)
-
-            if st.button("Split Dataset", type="primary"):
-                # Perform split
-                with render_errors():
-                    # conventions §7: every mutating action reports success **or** a rendered
-                    # ``FrameworkError``.  ``render_errors`` wraps the whole handler rather than
-                    # each domain call, because a rejected call must not fall through into the
-                    # display code that reads the variable it was going to bind.
-                    if df.isnull().sum().sum() > 0:
-                        if df[target_col].isnull().sum() > 0:
-                            df = df.dropna(subset=[target_col])
-                        strategy = {
-                            col: "median" if pd.api.types.is_numeric_dtype(df[col]) else "mode"
-                            for col in df.columns
-                            if col != target_col and df[col].isnull().sum() > 0
-                        }
-                        if strategy:
-                            df = data_manager.handle_missing_values(df, strategy)
-                        data_manager.raw_data = df
-
-                    X_train, X_val, X_test, y_train, y_val, y_test = data_manager.split_data(
-                        df, target_col, test_size, val_size, random_state
-                    )
-
-                    # Apply scaling if requested
-                    if apply_scaling:
-                        X_train, X_val, X_test = data_manager.scale_features(X_train, X_val, X_test)
-                        data_manager.X_train = X_train
-                        data_manager.X_val = X_val
-                        data_manager.X_test = X_test
-
-                    st.success("✅ Dataset split successfully!")
-
-                    # Display split summary
-                    summary = data_manager.get_split_summary()
-
-                    st.subheader("📊 Split Summary")
-                    col1, col2, col3 = st.columns(3)
-
-                    with col1:
-                        st.write("**Training Set**")
-                        st.metric("Samples", summary["train"]["samples"])
-                        st.write("Class Distribution:", summary["train"]["class_distribution"])
-
-                    with col2:
-                        st.write("**Validation Set**")
-                        st.metric("Samples", summary["validation"]["samples"])
-                        st.write(
-                            "Class Distribution:",
-                            summary["validation"]["class_distribution"],
-                        )
-
-                    with col3:
-                        st.write("**Test Set**")
-                        st.metric("Samples", summary["test"]["samples"])
-                        st.write("Class Distribution:", summary["test"]["class_distribution"])
-
-                    if apply_scaling:
-                        st.info("✅ Feature scaling applied using StandardScaler")
-
-                    ctx.store[StateKeys.DATA_PREPARED] = True
-        else:
-            st.warning("⚠️ Please upload a dataset first!")
 
     # TAB 2: Validation
     with tab2:
@@ -173,53 +79,57 @@ def render(ctx: AppContext) -> None:
                     # each domain call, because a rejected call must not fall through into the
                     # display code that reads the variable it was going to bind.
                     validation_report = data_manager.validate_dataset(df)
+                    ctx.store[StateKeys.VALIDATION_REPORT] = validation_report
+                    st.success("✅ Validation completed successfully!")
 
-                    # Display validation results
-                    col1, col2, col3 = st.columns(3)
+            validation_report = ctx.store.get(StateKeys.VALIDATION_REPORT)
+            if validation_report is not None:
+                # Display validation results
+                col1, col2, col3 = st.columns(3)
 
-                    with col1:
-                        st.metric("Total Rows", validation_report["shape"][0])
-                        st.metric("Total Columns", validation_report["shape"][1])
+                with col1:
+                    st.metric("Total Rows", validation_report["shape"][0])
+                    st.metric("Total Columns", validation_report["shape"][1])
 
-                    with col2:
-                        st.metric("Numeric Columns", len(validation_report["numeric_columns"]))
-                        st.metric(
-                            "Categorical Columns",
-                            len(validation_report["categorical_columns"]),
-                        )
-
-                    with col3:
-                        st.metric("Duplicate Rows", validation_report["duplicates"])
-                        st.metric("Memory Usage (MB)", f"{validation_report['memory_usage']:.2f}")
-
-                    # Missing values details
-                    st.subheader("Missing Values Analysis")
-                    missing_df = pd.DataFrame(
-                        {
-                            "Column": validation_report["missing_values"].keys(),
-                            "Missing Count": validation_report["missing_values"].values(),
-                            "Missing %": [
-                                f"{v:.2f}%" for v in validation_report["missing_percentage"].values()
-                            ],
-                        }
+                with col2:
+                    st.metric("Numeric Columns", len(validation_report["numeric_columns"]))
+                    st.metric(
+                        "Categorical Columns",
+                        len(validation_report["categorical_columns"]),
                     )
-                    missing_df = missing_df[missing_df["Missing Count"] > 0]
 
-                    if len(missing_df) > 0:
-                        st.warning("⚠️ Columns with missing values:")
-                        st.dataframe(missing_df, width="stretch")
-                    else:
-                        st.success("✅ No missing values detected!")
+                with col3:
+                    st.metric("Duplicate Rows", validation_report["duplicates"])
+                    st.metric("Memory Usage (MB)", f"{validation_report['memory_usage']:.2f}")
 
-                    # Column types
-                    st.subheader("Column Types")
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.write("**Numeric Columns:**")
-                        st.write(validation_report["numeric_columns"])
-                    with col2:
-                        st.write("**Categorical Columns:**")
-                        st.write(validation_report["categorical_columns"])
+                # Missing values details
+                st.subheader("Missing Values Analysis")
+                missing_df = pd.DataFrame(
+                    {
+                        "Column": validation_report["missing_values"].keys(),
+                        "Missing Count": validation_report["missing_values"].values(),
+                        "Missing %": [
+                            f"{v:.2f}%" for v in validation_report["missing_percentage"].values()
+                        ],
+                    }
+                )
+                missing_df = missing_df[missing_df["Missing Count"] > 0]
+
+                if len(missing_df) > 0:
+                    st.warning("⚠️ Columns with missing values:")
+                    st.dataframe(missing_df, width="stretch")
+                else:
+                    st.info("ℹ️ No missing values detected in dataset")
+
+                # Column types
+                st.subheader("Column Types")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write("**Numeric Columns:**")
+                    st.write(validation_report["numeric_columns"])
+                with col2:
+                    st.write("**Categorical Columns:**")
+                    st.write(validation_report["categorical_columns"])
         else:
             st.warning("⚠️ Please upload a dataset first!")
 
@@ -241,6 +151,7 @@ def render(ctx: AppContext) -> None:
                         # display code that reads the variable it was going to bind.
                         df = df.drop_duplicates()
                         data_manager.raw_data = df
+                        ctx.store[StateKeys.VALIDATION_REPORT] = None
                         st.success(f"✅ Removed duplicates! New shape: {df.shape}")
             else:
                 st.info("No duplicates found")
@@ -248,6 +159,7 @@ def render(ctx: AppContext) -> None:
             st.markdown("---")
 
             # Handle missing values
+            st.subheader("Missing Values Handling")
             st.write("**Handle Missing Values**")
             missing_cols = df.columns[df.isnull().any()].tolist()
 
@@ -292,8 +204,18 @@ def render(ctx: AppContext) -> None:
                         # display code that reads the variable it was going to bind.
                         df_cleaned = data_manager.handle_missing_values(df, strategy)
                         data_manager.raw_data = df_cleaned
-                        st.success("✅ Missing values handled successfully!")
-                        st.rerun()
+                        ctx.store[StateKeys.VALIDATION_REPORT] = None
+                        residual_nulls = [
+                            c for c in missing_cols if df_cleaned[c].isnull().any()
+                        ]
+                        if residual_nulls:
+                            st.warning(
+                                f"⚠️ Missing values handled, but boundary nulls remain in columns: {residual_nulls}. "
+                                "Consider using another strategy or 'drop' to resolve remaining nulls."
+                            )
+                        else:
+                            st.success("✅ Missing values handled successfully!")
+                            st.rerun()
             else:
                 st.success("✅ No missing values to handle!")
         else:
@@ -308,7 +230,9 @@ def render(ctx: AppContext) -> None:
 
             # Encoding section
             st.write("**Categorical Encoding**")
-            categorical_cols = df.select_dtypes(include=["object"]).columns.tolist()
+            categorical_cols = df.select_dtypes(
+                include=["object", "category", "string"]
+            ).columns.tolist()
 
             if categorical_cols:
                 st.write(f"Categorical columns found: {categorical_cols}")
@@ -332,6 +256,7 @@ def render(ctx: AppContext) -> None:
                                 df, cols_to_encode, encoding_method
                             )
                             data_manager.raw_data = df_encoded
+                            ctx.store[StateKeys.VALIDATION_REPORT] = None
                             st.success("✅ Encoding applied successfully!")
                             st.write("New shape:", df_encoded.shape)
                             st.rerun()
@@ -344,6 +269,103 @@ def render(ctx: AppContext) -> None:
             )
         else:
             st.warning("⚠️ Please upload a dataset first!")
+
+    # TAB 5: Train/Val/Test Split
+    with tab5:
+        st.subheader("✂️ Train/Validation/Test Split")
+
+        has_data = data_manager.raw_data is not None
+        if not has_data:
+            st.warning("⚠️ Please upload a dataset first!")
+        else:
+            df = data_manager.raw_data
+
+            if df.isnull().any().any():
+                st.warning(
+                    "⚠️ Dataset contains missing values (NaN). Please clean or impute them in Tab 3 (Cleaning) before splitting."
+                )
+
+            # Select target column
+            target_col = st.selectbox("Select Target Column:", df.columns.tolist())
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                test_size = st.slider("Test Set Size", 0.1, 0.3, 0.2, 0.05)
+            with col2:
+                val_size = st.slider("Validation Set Size", 0.05, 0.2, 0.1, 0.05)
+            with col3:
+                default_seed = get_config().random_seed if get_config().random_seed is not None else 42
+                random_state = st.number_input("Random State", 1, 999, default_seed)
+
+            train_size = 1 - test_size - val_size
+
+            # Display split proportions
+            st.write("**Split Proportions:**")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Train", f"{train_size * 100:.1f}%")
+            col2.metric("Validation", f"{val_size * 100:.1f}%")
+            col3.metric("Test", f"{test_size * 100:.1f}%")
+
+            # Scale features option
+            apply_scaling = st.checkbox("Apply Feature Scaling (StandardScaler)", value=True)
+
+        if st.button("Split Dataset", type="primary", disabled=not has_data):
+            # Perform split
+            with render_errors():
+                if not has_data:
+                    st.warning("⚠️ Please upload a dataset first!")
+                else:
+                    # conventions §7: every mutating action reports success **or** a rendered
+                    # ``FrameworkError``.  ``render_errors`` wraps the whole handler rather than
+                    # each domain call, because a rejected call must not fall through into the
+                    # display code that reads the variable it was going to bind.
+                    X_train, X_val, X_test, y_train, y_val, y_test = data_manager.split_data(
+                        df, target_col, test_size, val_size, random_state
+                    )
+
+                    # Apply scaling if requested
+                    if apply_scaling:
+                        try:
+                            X_train, X_val, X_test = data_manager.scale_features(X_train, X_val, X_test)
+                        except Exception:
+                            data_manager.reset_splits()
+                            ctx.store[StateKeys.DATA_PREPARED] = False
+                            raise
+                        data_manager.X_train = X_train
+                        data_manager.X_val = X_val
+                        data_manager.X_test = X_test
+
+                    st.success("✅ Dataset split successfully!")
+
+                    # Display split summary
+                    summary = data_manager.get_split_summary()
+
+                    st.subheader("📊 Split Summary")
+                    col1, col2, col3 = st.columns(3)
+
+                    with col1:
+                        st.write("**Training Set**")
+                        st.metric("Samples", summary["train"]["samples"])
+                        st.write("Class Distribution:", summary["train"]["class_distribution"])
+
+                    with col2:
+                        st.write("**Validation Set**")
+                        st.metric("Samples", summary["validation"]["samples"])
+                        st.write(
+                            "Class Distribution:",
+                            summary["validation"]["class_distribution"],
+                        )
+
+                    with col3:
+                        st.write("**Test Set**")
+                        st.metric("Samples", summary["test"]["samples"])
+                        st.write("Class Distribution:", summary["test"]["class_distribution"])
+
+                    if apply_scaling:
+                        st.info("✅ Feature scaling applied using StandardScaler")
+
+                    ctx.store[StateKeys.DATA_PREPARED] = True
 
     # ==================== OTHER MODULES (Placeholders) ====================
 

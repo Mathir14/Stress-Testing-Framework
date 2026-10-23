@@ -141,15 +141,35 @@ module may import only from the rungs above it.
    rung 4   core.perturbations   (depends on 1,2,3)
    rung 3   core.validation      (depends on 1,2)   <- numeric table + enums live HERE
    rung 2   core.errors          (depends on 1)     imports nothing project-local
-   rung 1   core.config          (depends on nothing project-local)
+   rung 1   core.config          (no project-local import at import time)
             (+ core.logging_config, core.model_io, core.reporters, core.scoring,
               core.state are siblings: they may import rungs 1-2 only, never each
               other except model_io -> config/errors)
 ```
 
+The ladder governs the **import-time graph**: a project-local import that
+executes when the module is imported. An import inside a function body does not
+execute on import and is not an import-time edge. This is the definition the
+machine check enforces — `_ImportTimeCollector` (`tests/test_architecture.py`)
+stops descent at every `FunctionDef`, so a method- or function-body import is
+never reported as an edge.
+
+**The one sanctioned deferred edge (ADR-028).** `core.config` raises
+`ConfigurationError`, so `core/config.py` contains `from core.errors import
+ConfigurationError` inside the functions that raise it. That is the **sole**
+project-local import `core.config` may hold, at any scope — pinned by
+`CONFIG_DEFERRED_ALLOWED = "errors"` and
+`test_config_deferred_import_is_cycle_free`. It is safe because `core.errors` is
+rung 2 and imports nothing project-local, so the deferred edge cannot close a
+cycle regardless of when it runs. `ConfigurationError` is deliberately not moved
+to a leaf `config` could import at module scope: doing so would split §4.1's
+single `FrameworkError` hierarchy to satisfy a table's letter. No other module
+gains a deferred project-local edge, and `core.config` may not import any other
+project-local module at any scope.
+
 | Module | MAY import inside `core/` | MUST NOT |
 |---|---|---|
-| `core.config` | — | any project-local module |
+| `core.config` | — | any project-local import at import time (the one deferred `errors` edge is sanctioned, ADR-028) |
 | `core.errors` | — | any project-local module |
 | `core.validation` | `config`, `errors` | `perturbations`, `model_io`, `state`, `reporters` |
 | `core.perturbations` | `config`, `errors`, `validation` | `model_io`, `state`, `reporters` |
@@ -216,15 +236,16 @@ class ArtifactIntegrityError(ArtifactError): ...  # sha256 mismatch
 class ArtifactUntrustedError(ArtifactError): ...  # not attested; trust not granted
 class UnknownModelError(FrameworkError): ...       # model name not in the trainer (ADR-019)
 class ModelNotTrainedError(FrameworkError): ...    # predict/save before training (ADR-019)
+class ModelPredictionError(FrameworkError): ...    # fitted estimator failed predict/predict_proba (ADR-035)
+class ModelTrainingError(FrameworkError): ...      # estimator failed during fitting/training (ADR-041)
 class ReportExportError(FrameworkError): ...       # JSON serialisation failure (ADR-019)
 ```
 
-`UnknownModelError`, `ModelNotTrainedError` and `ReportExportError` close the
-porous error boundary of run-011 M4: `ModelTrainer.get_model` / `predict` /
-`save_model` and `ReportGenerator.export_to_json` previously raised bare
-`ValueError`/`TypeError`, which `views.reporters.render_errors` (which catches
-only `FrameworkError`) could not render — so ordinary UI misuse surfaced as a raw
-traceback instead of the framework's error UI (conventions §3).
+`UnknownModelError`, `ModelNotTrainedError`, `ModelPredictionError`, `ModelTrainingError` and `ReportExportError` close the
+porous error boundary of run-011 M4 / run-025 m-2 / run-007 CRIT-1: `ModelTrainer.get_model` / `predict` /
+`save_model` / `train_model` and `ReportGenerator.export_to_json` previously raised bare
+`ValueError`/`TypeError` or allowed raw estimator fit exceptions to leak across the domain boundary,
+which `views.reporters.render_errors` (which catches only `FrameworkError`) could not render cleanly (conventions §3).
 
 ### 4.2 `core.config`
 
@@ -273,9 +294,21 @@ class ScoringPolicy:
     severity_bands: tuple[tuple[float, str], ...] = (
         (5.0, "Low"), (15.0, "Medium"), (30.0, "High"),
     )   # higher drop => severity_fallthrough ("Critical")
+    recommendation_bands: tuple[tuple[float, str], ...] = (
+        (80.0, "Excellent"), (60.0, "Good"), (40.0, "Moderate"),
+    )
+    recommendation_fallthrough: str = "Low"
+    key_vulnerability_drop_threshold: float = 20.0
+    robustness_bands: tuple[tuple[float, str], ...] = (
+        (10.0, "High"), (20.0, "Medium"),
+    )
+    robustness_fallthrough: str = "Low"
+    low_prediction_stability_threshold: float = 0.8
 
     def resolve_ece_quality(self, ece: float) -> str: ...
     def resolve_severity(self, drop_pct: float) -> str: ...
+    def resolve_recommendation(self, score: float) -> str: ...
+    def resolve_robustness(self, avg_drop: float) -> str: ...
     def weight_for(self, component: str) -> float: ...
 
 @dataclass(frozen=True)
@@ -1000,6 +1033,13 @@ The following signatures are frozen for this milestone (tests assert them):
   `ReliabilityScorer`, `ReportGenerator` public methods
 - `utils.metrics.*`, `utils.plotting.*`
 
+**Additive-freeze note (ADR-031).** `StressTester.batch_stress_test` gains a
+**keyword-only** `rng: np.random.Generator | None = None`. This does not break
+the freeze above: no existing positional call changes meaning, `rng=None`
+preserves the previous behaviour exactly, and the keyword-only guard turns any
+off-tree positional slip into a clean `TypeError`. It is the "frozen signature,
+extended additively" case, not a signature change.
+
 Intentional behaviour changes — the **complete** list; anything not here is a bug:
 
 1. `DataManager.load_dataset` raises `DatasetLoadError` instead of returning
@@ -1165,6 +1205,25 @@ above.
     by intent and the split is recorded in ADR-027. The only observable
     consequence is a `rated` flip for a model whose sole second "measured"
     component was a non-finite reading — unreachable from the shipped UI.
+
+**Run-025 remediation behaviour changes (ADR-033..035).** These extend the list above.
+
+27. **Evidence bundle tracked-ness enforced by git** (ADR-033, run-025 M-1).
+    `test_gate_evidence_bundle_is_tracked` checks git tracking via
+    `git ls-files --error-unmatch` and fails closed if `git` is absent.
+28. **Single-owner display caps and summary bands** (ADR-034, run-025 M-2/m-3).
+    `ReportGenerator.plot_radar_all` builds radar maxima from `self._reliability`
+    caps; `ReliabilityScorer.build_summary_df` uses `self.MAX_*` denominators;
+    `PostStressAnalyzer` delegates recommendation level, key vulnerability
+    threshold, category robustness, and stability checks to `ScoringPolicy`.
+29. **Typed stress-result ingestion and ModelPredictionError** (ADR-035, run-025 m-1/m-2/m-4/m-6).
+    `PostStressAnalyzer.add_stress_result` validates required result keys
+    (`accuracy_original`, `accuracy_stressed`, `performance_drop`,
+    `performance_drop_pct`, `prediction_agreement`), raising `ValidationError` on
+    missing keys; `ModelTrainer.predict` raises `ModelPredictionError` on
+    fitted-estimator inference failures; `ArtifactRecord.library_versions` defaults
+    to an empty dict via `field(default_factory=dict)`; `evidence_module._predict`
+    logs causes distinctly.
 
 Measured today, for reference — the defects items 1–11 remove: `int64 + float64`
 frames silently no-op in 5 of 6 operators; `int64` ndarrays silently truncate;

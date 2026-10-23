@@ -577,7 +577,7 @@ class ReportGenerator:
 <h1>🔬 ML Model Reliability Report</h1>
 <p>Generated: <strong>{_esc(generated)}</strong> &nbsp;|&nbsp; Dataset: <strong>{_esc(dataset)}</strong></p>
 
-<h2>Summary</h2>
+<h2>Executive Summary</h2>
 <div class="kpi-grid">
   <div class="kpi-card">
     <div class="kpi-value">{_esc(summary['num_models'])}</div>
@@ -702,7 +702,7 @@ class ReportGenerator:
                 body,
             ),
             Spacer(1, 0.5 * cm),
-            Paragraph("Summary", h2),
+            Paragraph("Executive Summary", h2),
             Paragraph(
                 f"Models trained: {_esc(report['summary']['num_models'])}  |  "
                 f"Best performance: {_esc(report['summary']['best_performance'])}  |  "

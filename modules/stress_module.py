@@ -333,6 +333,8 @@ class StressTester:
         X: pd.DataFrame,
         y: Any,
         stress_configs: list[dict[str, Any]],
+        *,
+        rng: np.random.Generator | None = None,
     ) -> dict[str, Any]:
         """
         Run multiple stress tests
@@ -344,6 +346,11 @@ class StressTester:
             stress_configs: List of stress test configurations, each with a
                 ``type`` key naming one of the six registry keys and an optional
                 ``params`` mapping
+            rng: Per-run generator forwarded to every operator (ADR-031).
+                ``None`` preserves the previous behaviour: each operator falls
+                back to its own default generator (§4.4).  The view passes
+                ``ctx.rng`` here, so the batch path honours the per-run seed
+                through the call graph rather than by rebinding ``self.rng``.
 
         Returns:
             Dictionary of results for each stress test
@@ -399,7 +406,10 @@ class StressTester:
             # names the operator, not a bare TypeError from ``**params``.
             params = validate_stress_params(stress_type, raw_params)
             logger.info("Applying batch stress %s", name)
-            X_stressed = getattr(self, method_name)(X, **params)
+            # ADR-031: the per-run generator is threaded through the call graph
+            # rather than read from ``self.rng``, so seeded determinism does not
+            # depend on mutating the session singleton.
+            X_stressed = getattr(self, method_name)(X, rng=rng, **params)
 
             # Evaluate
             result = self.evaluate_stress_test(model, X, X_stressed, y)

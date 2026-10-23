@@ -1169,3 +1169,481 @@ Numeric defaults referenced here are frozen by ADR-005 parity tests.
   parity fixture stays byte-identical.
 
 ---
+
+## ADR-028 — §2.3 is enforced over the import-time graph; the one deferred `config → errors` edge is sanctioned
+
+- **Status:** Accepted
+- **Context:** Roadmap deviation 10 recorded, but did not resolve, a real
+  text/code disagreement. `architecture.md` §2.3's ladder row read
+  `| core.config | — | any project-local module |` and the rung-1 line read
+  "depends on nothing project-local", yet `core/config.py` raises
+  `ConfigurationError` and therefore contains `from core.errors import
+  ConfigurationError` inside four function bodies. The enforced gate and the
+  written table disagreed: `_ImportTimeCollector`
+  (`tests/test_architecture.py`) stops descent at every `FunctionDef`, so a
+  function-body import is not an import-time edge, and
+  `CONFIG_DEFERRED_ALLOWED = "errors"` sanctions exactly that one deferral.
+- **Decision:**
+  1. **§2.3 defines the ladder over the *import-time graph*.** A module's
+     project-local imports that execute at import time are the governed edges;
+     an import inside a function body does not execute on import and is not such
+     an edge.
+  2. **The single deferred `config → errors` edge is the sanctioned exception**
+     to the `core.config` row — and only that edge. `core.config` may contain no
+     *other* project-local import at any scope, and no other module gains a
+     deferred project-local edge.
+  3. **`ConfigurationError` is not moved.** The alternative remedies (raise a
+     bare `ValueError` from `config`, or inline a second error type there) would
+     satisfy the table's letter by breaking §4.1's single `FrameworkError`
+     hierarchy — a worse trade.
+- **Rationale:** `core.errors` is rung 2 and imports nothing project-local, so
+  the deferred edge `config → errors` cannot close a cycle regardless of when it
+  runs; §2.3's purpose is to keep the `core/` module graph acyclic at import
+  time. The enforcement already exists and is unchanged; this ADR brings the
+  binding text into agreement with it instead of weakening either.
+- **Consequences:** `architecture.md` §2.3's ladder row and rung-1 line are
+  amended to define the import-time graph and name the sanctioned edge.
+  `_ImportTimeCollector`, `CONFIG_DEFERRED_ALLOWED` and
+  `test_config_deferred_import_is_cycle_free` remain the machine-readable truth
+  and still reject any *other* deferred edge or any new module-scope
+  project-local import in `config`. No rung changes, no module moves, no public
+  signature changes.
+
+---
+
+## ADR-029 — The minimal gate evidence bundle is tracked under `tests/evidence`, with a falsifying T0 gate
+
+- **Status:** Accepted
+- **Context:** The run-003 evidence bundle proved three load-bearing gates —
+  ADR-001's security boundary (`mutation_probe.py`), the §2.2 root-module gates
+  (`main_py_gate_probe.py`) and the §10.1 T0 tier + §4.9 CLI promise
+  (`t0_bare_venv.sh`) — but lived under `.forge/runs/run-003/evidence/`, and
+  `.forge/runs/` is `.gitignore`d. `decisions.md` cited the probes as the
+  verification of those ADRs, so the claims were reproducible only *within* the
+  run artifact and not from a fresh clone. An unreproducible gate result is a
+  claim, not evidence.
+- **Decision:**
+  1. **The minimal proof set is promoted to `tests/evidence/`:**
+     `t0_bare_venv.sh`, `mutation_probe.py`, `main_py_gate_probe.py` and a short
+     `README.md`. Large run artifacts stay out.
+  2. **Path depths are corrected for the new location** (`parents[4] →
+     parents[2]`; `HERE/../../../.. → HERE/../..`), so the probes resolve the
+     real repo root.
+  3. **A T0 gate asserts the bundle's presence, importability and `bash -n`
+     syntax safety, and falsifies its own green:** deleting the bundle turns the
+     suite red, so the "the evidence is tracked" claim is enforced rather than
+     asserted.
+- **Rationale:** Evidence that cannot ship with the tree cannot be audited.
+  `tests/` is the §2.2-declared home for the framework's own tooling and is
+  already scanned by the ADR-citation and deserialisation gates; a new top-level
+  `scripts/` directory would breach §2.2's exactly-two-root-modules rule
+  (roadmap deviation 9). `tests/evidence/` also sits beside the unrelated
+  `tests/test_evidence.py` without a pytest collection collision, because the
+  collection glob is `tests/test_*.py` at top level only and the probes are not
+  `test_`-named.
+- **Consequences:** The promoted probes stay **stdlib + `core.config` only** and
+  bare-venv runnable, and contain no banned deserialisation call pattern (the
+  one `tests/**`-wide gate that applies). `tests/test_architecture.py` gains a
+  T0 presence/import/syntax gate with a falsification control. No runtime
+  dependency, no new top-level module, no production behaviour change.
+
+---
+
+## ADR-030 — `slicer==0.0.8` removed as a verified orphan
+
+- **Status:** Accepted
+- **Context:** ADR-007 removed `shap` only and, in its "Verified by mutation"
+  notes, named `slicer==0.0.8` (`requirements.txt:45`) as a genuine orphan that
+  installing `shap` was the only reason to have — left in place because that
+  ADR's decision was "Remove `shap` only". That scope rationale has lapsed: this
+  task is the tech-debt run, and re-running the reverse-dependency query over
+  the environment returns `[]` for `slicer`.
+- **Decision:** Delete `slicer==0.0.8` from `requirements.txt`. The full
+  `requirements.txt` manifest/constraints split stays roadmap backlog item 4 and
+  is **not** done here.
+- **Rationale:** A reverse-`Requires-Dist` scan over the installed distributions
+  returns no requiring package for `slicer`, and no project file references it.
+  It is the one pin in the lockfile that is neither a declared direct dependency
+  nor a pinned transitive of one. `numba`, `llvmlite` and `cloudpickle` are
+  deliberately **kept**: the same scan shows them required conditionally by
+  `pandas` / `numba` / `xgboost`, i.e. pinned transitives of direct dependencies,
+  which ADR-007 declined to churn.
+- **Consequences:** The lockfile loses one unused direct pin.
+  `tests/test_cli.py::_pins()` reads `requirements.txt` live, so the `version`
+  assertions self-update. The suite and `tests/evidence/t0_bare_venv.sh` gate the
+  removal. No dependency that is in use is removed, and no new dependency is
+  added.
+
+---
+
+## ADR-031 — `batch_stress_test` takes a keyword-only `rng`; the view passes `ctx.rng` at the call site
+
+- **Status:** Accepted
+- **Context:** The batch stress path had no way to receive the per-run generator
+  except by mutation: `modules/stress_module.py`'s `batch_stress_test` expanded
+  `getattr(self, method)(X, **params)` with no `rng`, so
+  `views/module_04_stress.py:51` rebound the session singleton per script run —
+  `stress_tester.rng = ctx.rng`. ADR-011.4 requires that only
+  `views/base.build_context()` constructs a `Generator`, that the stress view
+  pass `ctx.rng` into every `apply_perturbation`, and that no other module does
+  so; a silent instance rebind makes the seeding flow implicit and is exactly the
+  `rng`-through-state coupling ADR-011.4 was written to remove from the
+  single-test path, left unremoved on the batch path.
+- **Decision:**
+  1. `StressTester.batch_stress_test` gains a **keyword-only**
+     `rng: np.random.Generator | None = None`, threaded into every dispatch as
+     `getattr(self, method)(X, rng=rng, **params)`.
+  2. `views/module_04_stress.py` deletes the per-run rebind and passes
+     `rng=ctx.rng` at the batch call site.
+  3. `rng=None` preserves today's behaviour exactly (each operator falls back to
+     its own default generator, §4.4).
+- **Rationale:** Seeded determinism belongs in the call graph, not in the
+  mutation of a singleton that outlives a script run (the singleton cannot
+  capture the per-run generator at construction without making results depend on
+  when it was created). Keyword-only keeps §9's public-API freeze **additive**:
+  no existing positional call can break, and any off-tree positional slip
+  becomes a clean `TypeError` rather than a silent rebind.
+- **Consequences:** `architecture.md` §9 gains an additive-freeze note permitting
+  the new keyword-only parameter; `module_04_stress.py`'s `stress_tester.rng =
+  ctx.rng` assignment disappears. No production numeric output changes and
+  `tests/fixtures/reliability_baseline.json` stays bit-identical. No new
+  dependency, no layer-matrix change.
+
+---
+
+## ADR-032 — Evidence probes expose a side-effect-free anchor self-check; the ADR-029 gate enforces anchor freshness
+
+- **Status:** Accepted
+- **Context:** ADR-029 promoted the gate-evidence bundle to `tests/evidence/` and
+  added a T0 gate (`test_gate_evidence_bundle_is_tracked`) asserting only that the
+  bundle is *present*, parses (`ast.parse`) and is shell-clean (`bash -n`). It never
+  runs the probes, so a probe whose text anchors have drifted out of the live tree
+  still ships green. That is not hypothetical: `mutation_probe.py`'s ADR-001c
+  anchor matched `actual = self._sha256(path)`, which ADR-024's read-once `load()`
+  replaced with `actual = hashlib.sha256(buffer).hexdigest()`. The anchor could no
+  longer resolve, the probe exited `1` with `SOME PROBES DID NOT BITE`, and no
+  suite assertion noticed — the seventh instance of the "gate that passes for the
+  wrong reason" class this project records (ADR-016.6, ADR-022, roadmap deviations
+  8, 11, 14, 15).
+- **Decision:**
+  1. **Every probe declares its edits.** `mutation_probe.py` and
+     `main_py_gate_probe.py` expose their `(rel, old, new)` source edits as a
+     module-level `DECLARED_EDITS` list rather than open-coding them at each
+     `probe(...)` call.
+  2. **A side-effect-free self-check.** Both probes accept `--check-anchors`,
+     which asserts, for every declared edit, that `old` is present in `rel` and
+     that `old != new`, then exits non-zero on any miss. Check mode performs no
+     file writes, spawns no subprocess and runs no pytest; it imports only the
+     standard library (plus `core.config` in `mutation_probe.py`), so it stays in
+     the T0 tier.
+  3. **The ADR-029 gate enforces freshness.** A new T0 sibling,
+     `test_evidence_probe_anchors_resolve_against_the_tree`, runs each Python
+     probe's `--check-anchors` in a subprocess and asserts exit `0`, so a
+     production change that moves an anchor fails the suite in milliseconds
+     instead of silently disabling a probe.
+  4. **The gate is falsified.**
+     `test_the_anchor_freshness_gate_would_catch_a_stale_anchor` takes the real
+     `mutation_probe.py` source, points its `ROOT` at the tree and injects one
+     deliberately stale anchor, then asserts the self-check exits non-zero — so
+     the freshness gate cannot itself pass for the wrong reason.
+  5. **Full mutation execution stays the on-demand evidence path.** The in-suite
+     gate proves anchors resolve; that is an explicit *lower bound*. The
+     committed, reproducible proof that each mutation still turns its named suite
+     red remains `python tests/evidence/mutation_probe.py`.
+- **Rationale:** ADR-029 verified that the evidence *exists*; it did not verify
+  that the evidence is *still valid against the code it describes*. A probe is a
+  contract against production source text, and production text changes. Executing
+  the full probe inside the suite is deliberately not done: `mutation_probe.py`
+  runs ~13 nested `pytest` subprocesses and mutates and restores source files,
+  which would be recursive, parallel-unsafe and an order of magnitude heavier than
+  the failure mode requires. The self-check detects precisely that failure mode —
+  anchor drift — cheaply and without side effects.
+- **Consequences:** The ADR-029 presence/parse/`bash -n` contract is unchanged and
+  still enforced in parallel. `mutation_probe.py`, `main_py_gate_probe.py` and
+  `tests/test_architecture.py` gain the self-check and the T0 gate. The ADR-001c
+  anchor is re-pointed at the ADR-024 read-once spelling. No production module, no
+  public interface, no dependency and no layer-matrix rule changes; the parity
+  fixture stays bit-identical.
+
+---
+
+## ADR-033 — Evidence tracked-ness enforced by git
+
+- **Status:** Accepted
+- **Context:** Critic M-1 found that `tests/evidence/` was untracked (`git ls-files`
+  empty) while ADR-029 and `test_gate_evidence_bundle_is_tracked` claimed it was
+  "committed"/"tracked". The gate only checked filesystem presence, `ast.parse`, and
+  `bash -n`, never git — allowing a commit to ship whose evidence bundle exists
+  locally but is absent on a fresh clone.
+- **Decision:**
+  1. Stage `tests/evidence/` (`t0_bare_venv.sh`, `mutation_probe.py`,
+     `main_py_gate_probe.py`, `README.md`) with `git add` and ensure `.gitignore`
+     does not match them.
+  2. Strengthen `test_gate_evidence_bundle_is_tracked` with a fourth claim: git
+     tracking, using `_untracked_evidence(base, members)` via `git ls-files --error-unmatch`.
+     The check fails closed (raising `AssertionError`) if `git` is absent or the
+     directory is not a git repository.
+  3. Add falsification control `test_the_evidence_bundle_gate_would_catch_an_untracked_member`.
+- **Rationale:** A gate asserting that evidence is tracked must measure git
+  tracking, not merely filesystem existence. Failing closed when `git` is absent
+  prevents false assurance on environments without git.
+- **Consequences:** `tests/evidence/` is tracked in git. The gate remains T0
+  (stdlib + `subprocess` + `git` binary).
+
+---
+
+## ADR-034 — Single-owner display caps and recommendation/summary bands
+
+- **Status:** Accepted
+- **Context:** Critic M-2 and m-3 found that radar and summary display paths
+  hardcoded component caps of 25 (`modules/reporting_module.py:412` and
+  `modules/reliability_module.py:478-481`) despite `self._reliability` and
+  `self.MAX_*` holding the configured maxima. Additionally,
+  `modules/post_stress_module.py` hardcoded recommendation bands (80/60/40), drop
+  thresholds (>20), category robustness bands (<10/<20), and stability
+  thresholds (<0.8) without configuration backing.
+- **Decision:**
+  1. `ReportGenerator.plot_radar_all` builds `maxvals` from
+     `self._reliability.max_perf/max_cal/max_rob/max_conf`.
+  2. `ReliabilityScorer.build_summary_df` formats component denominators as
+     `value / {self.MAX_*:g}`.
+  3. `core.config.ScoringPolicy` gains:
+     - `recommendation_bands = ((80.0, "Excellent"), (60.0, "Good"), (40.0, "Moderate"))`
+     - `recommendation_fallthrough = "Low"`
+     - `key_vulnerability_drop_threshold = 20.0`
+     - `robustness_bands = ((10.0, "High"), (20.0, "Medium"))`
+     - `robustness_fallthrough = "Low"`
+     - `low_prediction_stability_threshold = 0.8`
+     - Methods: `resolve_recommendation(score: float) -> str` and
+       `resolve_robustness(avg_drop: float) -> str`.
+  4. `PostStressAnalyzer` delegates recommendation level, key vulnerability
+     threshold, category robustness, and stability checks to `self.policy`.
+- **Rationale:** Preserves the ADR-018/ADR-005 single-owner policy: all scoring and
+  display thresholds are sourced from configuration. At defaults, every rendered
+  string and radar shape is bit-identical to pre-remediation output.
+- **Consequences:** All display and summary paths respect injected configuration
+  policies. The default reliability parity fixture is untouched.
+
+---
+
+## ADR-035 — Typed stress-result ingestion and ModelPredictionError
+
+- **Status:** Accepted
+- **Context:** Critic m-1, m-2, m-4, and m-6 found boundary leaks and type
+  inaccuracies across domain interfaces:
+  - `PostStressAnalyzer` indexed stress result keys directly, leaking bare
+    `KeyError`s on malformed inputs (violating conventions §3).
+  - `ModelTrainer.predict` relabeled all estimator exceptions as
+    `ModelNotTrainedError`, misrepresenting feature-shape or inference failures as
+    untrained models.
+  - `ArtifactRecord.library_versions` used a type annotation lie
+    `Mapping[str, str] = None # type: ignore`.
+  - `evidence_module._predict` swallowed all exceptions with a single generic
+    warning, obscuring distinguishing causes.
+- **Decision:**
+  1. `PostStressAnalyzer.add_stress_result` validates incoming results against
+     `REQUIRED_STRESS_RESULT_KEYS`, raising `ValidationError` naming any missing
+     keys.
+  2. `core.errors` adds `ModelPredictionError(FrameworkError)`.
+     `ModelTrainer.predict` retains `ModelNotTrainedError` for the untrained gate
+     but raises `ModelPredictionError` for fitted inference/probability failures.
+  3. `ArtifactRecord.library_versions` is declared as
+     `field(default_factory=dict)` without type-ignores or `or {}` reads.
+  4. `evidence_module._predict` logs `ModelNotTrainedError` at INFO,
+     `ModelPredictionError`/`FrameworkError` at WARNING, and unexpected errors
+     with `logger.exception`.
+- **Rationale:** Completes the typed-boundary discipline (conventions §3).
+  Eliminates bare `KeyError`s at ingestion and distinguishes causal errors during
+  model inference.
+- **Consequences:** Ingestion and prediction failures raise distinct,
+  user-actionable typed exceptions. Existing valid result shapes are accepted
+  unchanged.
+
+---
+
+## ADR-036 — Model capability encapsulation, metric polarity awareness, and state synchrony
+
+- **Status:** Accepted
+- **Context:** Run-028 Critic audit uncovered:
+  - Metric polarity inversion in `ModelTrainer.get_best_model` (MAJ-1), where
+    minimization metrics (`loss`, `ece`, `brier_score`, etc.) selected the worst model.
+  - Failure sentinels (`return None`) in `ModelTrainer` visualization and query
+    methods (`get_classification_report`, `plot_confusion_matrix`,
+    `plot_metrics_comparison`, `get_feature_importance`, `plot_feature_importance`,
+    `get_probability_distribution`) violating conventions §3 (MAJ-2).
+  - State asymmetry in `DataManager.scale_features` (MAJ-3), leaving stale unscaled
+    splits in `self.X_val` and `self.X_test` when called with partial splits.
+  - Raw scikit-learn estimator attribute introspection in `views/module_06_calibration.py`
+    and `views/module_03_confidence.py` (`predict_proba`, `classes_`) violating domain
+    encapsulation (MAJ-4).
+  - Visual contrast degradation in gauge background step bands in
+    `ReportGenerator.plot_gauge_all` (MIN-1).
+  - Silent fallback masking in `evidence_module.class_count` on conflicting model class counts (MIN-2).
+  - Hardcoded recommendation cutoff ratios in `ReliabilityScorer.generate_recommendations` (MIN-4).
+- **Decision:**
+  1. `ModelTrainer.get_best_model` gains `LOWER_IS_BETTER_METRICS` awareness and a
+     keyword-only `lower_is_better: bool | None = None` parameter. Polarity is inferred
+     by default, selecting minimum scores for error and loss metrics.
+  2. `ModelTrainer` encapsulates estimator introspection via domain methods:
+     `supports_probabilities(name)`, `get_classes(name)`, `get_class_names(name)`,
+     and `supports_feature_importance(name)`. Presentation views consume these methods exclusively.
+  3. `ModelTrainer` visualization and query methods replace `return None` sentinels with
+     typed `ModelNotTrainedError`, `ValidationError`, and `ModelPredictionError` exceptions.
+  4. `DataManager.scale_features` unconditionally updates `self.X_val = X_val_scaled` and
+     `self.X_test = X_test_scaled` to maintain state synchrony across splits.
+  5. `core.config.ScoringPolicy` gains `recommendation_component_ratios` and
+     `recommendation_ratios_for(component)`. `ReliabilityScorer` delegates to this policy,
+     preserving bit-exact numerical parity against `reliability_baseline.json`.
+  6. `ReportGenerator.plot_gauge_all` (and `plot_reliability_gauge_row`) renders step bands
+     with translucent alpha tinting (`rgba(r, g, b, 0.22)`) for contrast against foreground bars.
+  7. `evidence_module.class_count` gains `strict: bool = False`, raising `DatasetError` on
+     conflicting class counts across models when enabled.
+- **Rationale:** Preserves architectural boundaries, prevents metric optimization inversions,
+  enforces typed exceptions across domain query interfaces, and ensures split state consistency.
+- **Consequences:** All domain interfaces strictly conform to conventions §3. Baseline parity
+  and gate probes remain green.
+
+---
+
+## ADR-037 — Presentation policy decoupling, centralized color palettes, and IEEE 754 NaN model selection hardening
+
+- **Status:** Accepted
+- **Context:** Run-029 Critic audit uncovered:
+  - Hardcoded robustness score interpretation cutoffs (`80`, `60`, `40`) in `views/module_05_post_stress.py`
+    (MAJ-1) bypassing `ScoringPolicy.resolve_recommendation(score)`.
+  - Hardcoded 70/40 rating cutoffs and static color hex codes in `modules/comparison_module.py`
+    (`plot_robustness_comparison`, `plot_composite_scores`) and `views/module_07_comparison.py`,
+    as well as a static markdown table of composite weights (50%, 25%, 25%) bypassing `ReliabilityWeights.resolve_grade`
+    and `ScoringPolicy.composite_weights` (MAJ-2).
+  - Hardcoded component score denominators (`/ 25`) in `views/module_08_reliability.py` (MIN-1)
+    bypassing dynamic `ReliabilityScorer.MAX_*` configured caps.
+  - Potential IEEE 754 `NaN` poisoning in `ModelTrainer.get_best_model` (MIN-2) where an initial model
+    evaluating to `NaN` causes all subsequent float comparisons to evaluate to `False`, incorrectly retaining
+    the `NaN` model over subsequent models with valid finite scores.
+- **Decision:**
+  1. `ModelTrainer.get_best_model` guards against `NaN` poisoning: finite scores strictly take
+     precedence over `math.nan` scores, while cleanly falling back to the initial model if all
+     evaluated models produce `NaN`.
+  2. `views/module_05_post_stress.py` delegates score interpretation to
+     `post_stress_analyzer.policy.resolve_recommendation(score)`, eliminating hardcoded numeric thresholds.
+  3. `ModelComparator.plot_robustness_comparison` and `ModelComparator.plot_composite_scores` derive bar
+     marker colors from `self.weights.resolve_grade(score)[1]`, aligning with the centralized grade palette.
+  4. `views/module_07_comparison.py` resolves model ratings in `score_df` via `comparator.weights.resolve_grade(s)[0]`,
+     and dynamically generates the Score Breakdown table from `comparator.policy.composite_weights`.
+  5. `views/module_08_reliability.py` dynamically formats component caps using `{scorer.MAX_*:g}` denominators.
+- **Rationale:** Enforces single-owner policy invariants (ADR-005, ADR-018, ADR-023, ADR-034), centralizes
+  visual styling within `ReliabilityWeights`, and hardens model selection against degenerate float edge cases.
+- **Consequences:** Changes in `ScoringPolicy` or `ReliabilityWeights` are dynamically reflected across all
+  views and comparison charts. Parity baseline and gate probes remain 100% compliant.
+
+---
+
+## ADR-038 — Presentation binding of decoupled summaries, fail-fast input validation, and transactional session state
+
+- **Status:** Accepted
+- **Context:** Run-030 Critic audit and Architectural evaluation uncovered:
+  - An unhandled `ValueError` in `ReportGenerator.compile_report` (Major 1) when robustness results contained models disjoint from the current active models list.
+  - Discarded return value from `DataManager.display_summary` in `views/module_01_data.py` (Major 2), hiding dataset preview, column details, and descriptive statistics tables from the UI.
+  - Silent fallthrough on unsupported encoding methods and rigid `object`-only dtype filtering in `DataManager.encode_categorical` (Major 3).
+  - Unvalidated temperature parameter in `CalibrationAnalyzer.apply_temperature_scaling` (Major 4) risking `ZeroDivisionError`, negative logit inversion, and non-finite calculation.
+  - Premature session state flag mutation in `views/module_02_baseline.py` (Minor 1) marking `StateKeys.MODEL_TRAINED = True` before model split evaluation succeeded.
+  - String-formatted metric values in `ModelTrainer.get_model_summary` and `ModelComparator.build_comparison_df` (Minor 2) destroying numeric `float` dtypes in returned DataFrames.
+  - A proposal to add caching to `evidence_module.collect_evidence` (Minor 3) was evaluated and explicitly rejected under ADR-020 and architecture.md §8 due to correctness hazards with unhashed model identity.
+- **Decision:**
+  1. `ReportGenerator.compile_report` safely handles empty or disjoint model robustness subsets by checking `if robustness_by_model:` before calling `min()`, falling back cleanly to `"N/A"`.
+  2. `DataManager.encode_categorical` validates that `method` is in `("label", "onehot")`, raising typed `ValidationError` with `field="method"` for unsupported methods, and expands label encoding to support `pd.CategoricalDtype` and `is_string_dtype` columns.
+  3. `CalibrationAnalyzer.apply_temperature_scaling` validates that `temperature` is a finite positive number (`> 0.0`), explicitly rejecting booleans, non-finite values, zero, and negative numbers with `ParameterOutOfRangeError`.
+  4. `ModelTrainer.get_model_summary` and `ModelComparator.build_comparison_df` store metric values as `round(float(...), 4)`, preserving numeric `float64` dtypes in tabular outputs.
+  5. `views/module_01_data.py` renders dataset preview, column details, and statistical summary tables with `st.dataframe(..., width="stretch")` whenever data is loaded, without modifying frozen widget keys.
+  6. `views/module_02_baseline.py` updates `StateKeys.MODEL_TRAINED = True` transactionally, executing only after model loading and all three split evaluations complete without error.
+  7. Reaffirm ADR-020: synchronous recalculation in evidence collection is preserved; ad-hoc caching without content-based cache keys remains rejected.
+  8. [Superseded by ADR-039] Resilient missing value handling on split and baseline training: `views/module_01_data.py` auto-imputes remaining missing feature values and drops missing target rows during dataset splitting, and `ModelTrainer.get_model` encapsulates `LogisticRegression` within a `Pipeline` containing `SimpleImputer(strategy="mean")` so baseline model training and evaluation succeed without `ValueError` when handling datasets with missing values.
+- **Rationale:** Aligns with conventions §3 (typed errors, fail-fast domain boundaries), conventions §7 (UI layout standards, width="stretch"), conventions §5 (purity and numeric integrity), and ensures session state consistency across model evaluation failures.
+- **Consequences:** Domain services fail fast with user-actionable typed exceptions, presentation views correctly surface decoupled dataset statistics, baseline models train robustly on datasets containing missing values, and session state maintains transactional integrity. All regression and architecture suites pass.
+
+---
+
+## ADR-039 — Elimination of presentation-layer auto-imputation, restoration of canonical data preparation tab flow, and unified estimator validation
+
+- **Status:** Accepted
+- **Context:** Run-031 architectural review identified several issues with the presentation-layer auto-imputation and asymmetric estimator pipeline introduced in ADR-038 item 8:
+  - Presentation-layer silent auto-imputation and row dropping in `views/module_01_data.py` violated architectural layering (conventions §2, §4) by performing data transformations and mutations directly in the view layer rather than through domain services.
+  - The tab order in `views/module_01_data.py` placed split prior to cleaning, conflicting with the canonical, sequential data preparation workflow (Upload -> Validation -> Cleaning -> Encoding & Scaling -> Train/Val/Test Split).
+  - Wrapping `LogisticRegression` in a `Pipeline` with `SimpleImputer` in `ModelTrainer.get_model` created estimator asymmetry across supported model architectures (Random Forest, Gradient Boosting, XGBoost were not wrapped in pipelines), broke clean estimator type introspection, and masked data quality issues rather than enforcing fail-fast validation.
+  - Domain services (`DataManager.split_data`, `DataManager.scale_features`, and `ModelTrainer.train_model`) lacked explicit domain-boundary validation against non-finite values (`NaN` and `inf`), allowing corrupted arrays to pass into downstream modeling and scaling algorithms.
+- **Decision:**
+  1. Supersede ADR-038 item 8.
+  2. Remove presentation-layer auto-imputation and target row dropping from `views/module_01_data.py`. Views must remain presentation-only and must not mutate data or perform silent imputation.
+  3. Restore canonical sequential tab structure in `views/module_01_data.py`:
+     - `tab1`: Upload
+     - `tab2`: Validation
+     - `tab3`: Cleaning (Missing value handling, Outlier removal, Duplicate removal)
+     - `tab4`: Encoding & Scaling
+     - `tab5`: Train / Val / Test Split
+  4. Revert `ModelTrainer.get_model("Logistic Regression")` to return a direct, clean `LogisticRegression` estimator instance without `Pipeline` or `SimpleImputer` wrappers, unifying estimator interface and inspection across all model families.
+  5. Enforce fail-fast domain boundary validation across domain services:
+     - `DataManager.split_data`: Validates that `target_column` exists and contains no `NaN` values, raising typed `ValidationError` with details if missing values are present.
+     - `DataManager.scale_features`: Validates all input splits (`X_train`, `X_val`, `X_test`) for missing values (`NaN`), raising typed `ValidationError` listing affected columns before calling `StandardScaler`.
+     - `ModelTrainer.train_model`: Validates that training features `X_train` and target `y_train` contain no `NaN` or `inf` values, raising typed `ValidationError` if non-finite values are detected.
+  6. Update user workflow guidance and error feedback in `views/module_01_data.py` to clearly instruct users to clean missing values in the Cleaning tab (`tab3`) before proceeding to splitting (`tab5`).
+  7. Maintain frozen session contract (64 widget keys in `tests/fixtures/widget_keys.json`) and enforce domain purity across all data preparation and modeling operations.
+- **Rationale:** Preserves clean architectural boundaries (domain services handle logic and validation; views handle presentation and user interaction), restores explicit user control over data preparation, eliminates estimator asymmetry, and adheres to conventions §3 (typed errors and fail-fast domain boundaries).
+- **Consequences:** Datasets containing missing values must be explicitly cleaned using the domain operations in Tab 3 prior to splitting and baseline training. Domain and view layers remain strictly decoupled. All baseline parity, gate probes, and architectural tests pass.
+
+---
+
+## ADR-040 — Robust array target type handling, complete non-finite domain boundary validation, and view ergonomics purification
+
+- **Status:** Accepted
+- **Context:** Run-003 Critic audit identified:
+  - An unhandled `TypeError` ufunc crash in `ModelTrainer.train_model` (Major 1) when `y_train` is an `np.ndarray` of non-numeric types (e.g. categorical string labels) due to invoking `np.isnan(y_train)` and `np.isinf(y_train)` without dtype verification.
+  - Missing `inf` validation in `DataManager.scale_features` (Major 2) leaking raw scikit-learn `ValueError: Input X contains infinity`.
+  - Incomplete domain boundary validation in `DataManager.split_data` (Major 3), which checked only `target_column` for `NaN`, permitting dirty features (with `NaN` or `inf`) to be split and marked as `DATA_PREPARED = True` when scaling is disabled, and leaving dirty unscaled splits in `DataManager` if scaling subsequently failed.
+  - Redundant duplicate `validate_dataset` execution in `views/module_01_data.py` (Minor 1) on the "Run Validation" button.
+  - Ergonomic degradation in `views/module_01_data.py` (Minor 2) where column missing-value strategies were rendered as vertical `st.radio` buttons instead of `st.selectbox`.
+  - Disjoint model counting in `ReportGenerator.compile_report` (Minor 3) where summary KPI `num_stressed` counted all models in `rob_rows` including those absent from active `models`.
+  - Untracked test fixture `tests/fixtures/sample_dataset.csv` (Minor 4).
+- **Decision:**
+  1. `ModelTrainer.train_model` guards `np.isnan` and `np.isinf` on NumPy arrays with `np.issubdtype(y_train.dtype, np.number)` (and applies the same numeric guard to `X_train`). For non-numeric or object arrays, use `pd.isna` to safely detect missing values without triggering ufunc `TypeError`.
+  2. `DataManager.scale_features` validates numeric columns across all provided splits (`X_train`, `X_val`, `X_test`) for non-finite values (`inf`) using `np.isinf`, raising typed `ValidationError` with details before `StandardScaler` is invoked.
+  3. `DataManager.split_data` enforces complete domain boundary validation on features and target before splitting:
+     - Rejects missing values (`NaN`) in feature columns with typed `ValidationError` (`field="features"`).
+     - Rejects non-finite values (`inf`) in numeric feature columns with typed `ValidationError` (`field="features"`).
+     - Rejects non-finite values (`inf`) in numeric target column with typed `ValidationError` (`field=target_column`).
+     - Preserves transactional integrity: internal split state attributes (`self.X_train`, etc.) are assigned only upon successful splitting.
+     - In `views/module_01_data.py`, if `apply_scaling` fails, split attributes in `data_manager` are rolled back to `None` to prevent corrupted state.
+  4. `views/module_01_data.py` eliminates duplicate validation execution: when "Run Validation" is pressed, `validate_dataset` executes once, displays `st.success`, and its result is directly passed to the presentation layout.
+  5. `views/module_01_data.py` restores `st.selectbox` for missing-value strategies with `key=f"missing_{col}"`, complying with `tests/fixtures/widget_keys.json` without layout bloat.
+  6. `ReportGenerator.compile_report` computes `num_stressed` as `len({r["Model"] for r in rob_rows if r["Model"] in models})`.
+  7. Stage and track `tests/fixtures/sample_dataset.csv`.
+- **Rationale:** Strictly upholds conventions §3 (typed errors across domain boundaries, no leaked built-in exceptions), conventions §5 (purity, immutability, transactional state), conventions §7 (UI ergonomics and error reporting), and preserves the frozen session widget contract.
+- **Consequences:** All domain entry points reject non-finite and missing data with informative `ValidationError`s; categorical/string target arrays train cleanly without crashing; UI layouts remain clean and responsive; test fixture is tracked in git. All existing tests and architecture gates remain green.
+
+---
+
+## ADR-041 — Domain error boundary closure for model fitting, workflow sequence restoration, responsive CSS refactoring, and presentation deduplication
+
+- **Status:** Accepted
+- **Context:** Run-007 Critic audit identified several regressions and domain leaks:
+  - CRIT-1: Raw built-in `ValueError: could not convert string to float` leaked across the domain boundary during `ModelTrainer.train_model` when `X_train` contained unencoded non-numeric or categorical features, and arbitrary estimator fitting failures were not encapsulated, crashing the Streamlit UI with unhandled tracebacks instead of user-actionable alerts.
+  - MAJ-1: Direct reversal of ADR-039 tab sequencing in `views/module_01_data.py` (placing `"✂️ Train/Val/Test Split"` as Tab 2) to accommodate narrow mobile viewport scrolling limitations, inverting the canonical data workflow.
+  - MAJ-2: Unconditional execution of `validate_dataset(df)` on every script rerun in `views/module_01_data.py`, turning `"Run Validation"` into a hollow dummy button and introducing rendering latency.
+  - MAJ-3: Fragile global CSS override in `views/base.py` setting `pointer-events: none !important` on `[data-testid="stSidebar"]`, breaking all unlisted mobile sidebar controls.
+  - MAJ-4: Stale view state in `views/module_01_data.py` where missing value imputation omitted `st.rerun()`, leaving pre-cleaning counts rendered beneath the success banner.
+  - MIN-1: Redundant Executive Summary briefing subheader and info box in Tab 1 of `views/module_09_reports.py`, duplicating top-level KPI metrics.
+  - MIN-2: Tautological model membership filtering in `modules/reporting_module.py` (`num_stressed`).
+- **Decision:**
+  1. Define `ModelTrainingError(FrameworkError)` in `core/errors.py` (and export it in `__all__`) to represent estimator fitting failures.
+  2. In `ModelTrainer.train_model`, validate that `X_train` contains strictly numeric columns (or numeric dtypes for ndarrays) before fitting, raising typed `ValidationError(field="X_train")` for non-numeric columns. Wrap `model.fit(X_train, y_train)` in a typed exception boundary that catches arbitrary estimator exceptions and re-raises them as `ModelTrainingError` with machine context (`model_name`, `error`), while letting `FrameworkError` propagate.
+  3. Restore canonical sequential tab ordering in `views/module_01_data.py` per ADR-039 §3: `Upload -> Validation -> Cleaning -> Encoding & Scaling -> Train/Val/Test Split`.
+  4. Ensure `"Split Dataset"` button remains present in the DOM across all session states with `disabled=not has_data`, resolving automated DOM test assertions without altering tab order.
+  5. Restore conditional execution of `validate_dataset(df)` strictly upon clicking `"Run Validation"` per ADR-040 §4.
+  6. Re-introduce `st.rerun()` in Tab 3 upon successful missing value handling to immediately clear stale metrics.
+  7. In `views/base.py`, replace brittle selector-based `pointer-events: none` with attribute-scoped CSS: set `pointer-events: none !important;` on `[data-testid="stSidebar"][aria-expanded="false"]` and `pointer-events: auto !important;` on `[data-testid="stSidebar"][aria-expanded="true"]`. Add responsive horizontal tablist scrolling rules (`overflow-x: auto !important; flex-wrap: nowrap !important;`) on `[data-testid="stTabs"] [role="tablist"]`.
+  8. Remove duplicate Executive Summary Briefing from Tab 1 in `views/module_09_reports.py`.
+  9. Simplify `num_stressed` calculation in `modules/reporting_module.py` to `len({r["Model"] for r in rob_rows})`.
+- **Rationale:** Strictly upholds conventions §3 (typed errors across domain boundaries, zero leaked raw exceptions), conventions §7 (UI workflow and presentation ergonomics), and architectural layering (§2.1, §2.3).
+- **Consequences:** Domain error boundaries are fully closed; estimator training failures are caught and cleanly rendered via `render_errors`; canonical data preparation flow is restored; mobile sidebar interactions function robustly across all controls; and report dashboards remain clear of redundant presentation text. All unit, architectural, and smoke tests pass green.
+
+
+

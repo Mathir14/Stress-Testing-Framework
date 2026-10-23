@@ -573,7 +573,16 @@ confused again.
 A gate that passes for the wrong reason is the failure mode ADR-010's rationale
 warns about, and it was found here *inside the artifact whose purpose is to
 prove such gates do not pass for the wrong reason*. Both probe files now run
-clean: 14/14 in `mutation_probe.py`, 5/5 in `main_py_gate_probe.py`.
+clean: 14/14 in `mutation_probe.py`, 6/6 in `main_py_gate_probe.py`. The counts
+were corrected in run-019: this line previously claimed `14/14 … 5/5`, while the
+ADR-001c anchor — written against the pre-ADR-024 digest spelling — had already
+drifted to a non-resolving `13/14` (the probe exited `1`), and
+`main_py_gate_probe.py` had been `6/6` since probe 6 was added in run-003. The
+drift class is now machine-checked rather than left to re-discovery: ADR-032
+requires every probe to expose a side-effect-free `--check-anchors` self-check,
+and the T0 gate `test_evidence_probe_anchors_resolve_against_the_tree` runs it,
+so a production reword that moves an anchor fails the suite instead of silently
+disabling the probe it belongs to.
 
 ### 9. The T0 gate evidence is now reproducible instead of merely reported
 
@@ -589,12 +598,16 @@ promoted a T0 file to T1 would fail the script rather than quietly change what
 promise under `python -S`, which hides site-packages entirely. Verified:
 199 passed, 2 skipped, all five probes green.
 
-Note that `.forge/runs/` is gitignored, so this evidence bundle — like the two
-probe scripts — is **not** committed. The claims above are therefore reproducible
-*within the run artifact* and from a report that carries it, not from a fresh
-`git clone`. Promoting the probes into a tracked directory is deliberately left
-out of scope: §2.2 declares exactly two top-level modules and adding a third
-top-level path to hold tooling would need its own architecture decision.
+The `.forge/runs/` origin above is historical: since then the bundle has been
+**promoted and is committed** — ADR-029 tracks `t0_bare_venv.sh`,
+`mutation_probe.py`, `main_py_gate_probe.py` and `README.md` under
+`tests/evidence/`, and ADR-032 adds the anchor-freshness self-check those probes
+must expose. The claims are therefore reproducible from a fresh `git clone` by
+running the tracked bundle, not only from a run artifact. A new top-level
+`scripts/` path remains out of scope on the original grounds — §2.2 declares
+exactly two top-level modules — but that is no longer a barrier to keeping the
+evidence, because the bundle lives inside `tests/`, which §2.2 declares and the
+ADR-citation and deserialisation gates already scan.
 
 ### 10. `core.config` defers one project-local import, which §2.3's table forbids outright
 
@@ -1114,4 +1127,32 @@ ADR-010 warns about. Fixed in run-012: `compile_report` reads
 22.5-vs-21.25 reproduction). The `mypy` dev pin + `[tool.mypy]` config and the
 `views/module_09_reports.py` JSON-heading placeholder were landed at the same
 time; `mypy core` is now green.
+
+---
+
+## Run-025 remediation (ADR-033..035)
+
+The run-025 Critic audit identified two Major issues and seven Minor issues:
+evidence bundle untracked in git (M-1), hardcoded display caps contradicting
+single-owner policy (M-2), bare KeyErrors on malformed stress results (m-1),
+ModelTrainer.predict relabeling all failures as ModelNotTrainedError (m-2),
+unowned recommendation and summary bands (m-3), ArtifactRecord.library_versions
+type lie (m-4), redundant report JSON serialization (m-5), indistinguishable
+evidence failure logging (m-6), and unignored forge files in .gitignore (m-7).
+
+Remediation implemented:
+
+| Finding | Fix | ADR / task |
+|---|---|---|
+| M-1 `tests/evidence/` untracked | `git add tests/evidence/`; gate asserts `git ls-files --error-unmatch` and fails closed without git | ADR-033 / T1, T2 |
+| M-2 Component caps hardcoded as 25 | `plot_radar_all` uses `self._reliability.max_*`; `build_summary_df` uses `self.MAX_*` | ADR-034 / T3, T4 |
+| m-1 Bare KeyError on malformed stress result | `add_stress_result` validates required keys (`REQUIRED_STRESS_RESULT_KEYS`) raising `ValidationError` | ADR-035 / T6 |
+| m-2 Estimator failure relabeled as untrained | `ModelTrainer.predict` raises `ModelPredictionError` for fitted inference failures | ADR-035 / T7, T8 |
+| m-3 Unowned recommendation and summary thresholds | `ScoringPolicy` owns bands and resolvers; `PostStressAnalyzer` delegates to `self.policy` | ADR-034 / T5, T6 |
+| m-4 `ArtifactRecord.library_versions` type lie | `field(default_factory=dict)` with no type-ignore or `or {}` reads | ADR-035 / T9 |
+| m-5 Report JSON serialised twice | Export once in `module_09_reports.py` and reuse bytes; honest PDF error handling | T10 |
+| m-6 Indistinguishable evidence prediction errors | `_predict` logs `ModelNotTrainedError` (INFO), `ModelPredictionError`/`FrameworkError` (WARNING), unexpected (exception) | ADR-035 / T11 |
+| m-7 `.gitignore` unignored forge files | Added `.forge/knowledge/`, `.forge/working_tree.lock*`, `forge.yaml` | T12 |
+
+All defaults reproduce previous behaviour bit-exactly; `tests/fixtures/reliability_baseline.json` is untouched.
 

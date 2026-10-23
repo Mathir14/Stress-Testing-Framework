@@ -854,3 +854,109 @@ def test_batch_stress_still_dispatches_a_valid_configuration():
     )
     assert set(results) == {"noise"}
     assert "performance_drop" in results["noise"]
+
+
+# ── ADR-031: the batch path takes an explicit ``rng`` ────────────────────────
+#
+# ``batch_stress_test`` gained a keyword-only ``rng`` so the per-run generator is
+# threaded through the call graph instead of being rebound onto the session
+# singleton by the view.  These tests pin the three properties that change makes
+# load-bearing: an explicit seed is reproducible, ``rng=None`` still falls back
+# to ``self.rng`` (today's behaviour), and the explicit argument overrides the
+# instance generator.
+
+
+def _rng_sensitive_batch_frame():
+    """Return ``(model, X, y, configs)`` whose stressed predictions depend on the RNG.
+
+    The model predicts the sign of the first feature; a ``noise_level=0.5``
+    Gaussian perturbation on values of magnitude ``1`` flips that sign for a
+    sizeable fraction of rows, so two different seeds produce different stressed
+    predictions and a determinism check is not vacuous.
+    """
+    pd = pytest.importorskip("pandas")
+    numpy = pytest.importorskip("numpy")
+
+    class _SignModel:
+        def predict(self, X):
+            return (numpy.asarray(X)[:, 0] > 0.0).astype(int)
+
+    values = numpy.tile([-1.0, 1.0], 100)
+    frame = pd.DataFrame({"a": values, "b": values * 0.5})
+    labels = pd.Series((values > 0).astype(int))
+    configs = [{"type": "gaussian_noise", "params": {"noise_level": 0.5}, "name": "noise"}]
+    return _SignModel(), frame, labels, configs
+
+
+def test_batch_stress_is_reproducible_through_the_explicit_rng():
+    """ADR-031: the same explicit seed produces identical batch predictions."""
+    numpy = pytest.importorskip("numpy")
+    from modules.stress_module import StressTester
+
+    model, frame, labels, configs = _rng_sensitive_batch_frame()
+    first = StressTester().batch_stress_test(
+        model, frame, labels, configs, rng=numpy.random.default_rng(7)
+    )
+    second = StressTester().batch_stress_test(
+        model, frame, labels, configs, rng=numpy.random.default_rng(7)
+    )
+    other = StressTester().batch_stress_test(
+        model, frame, labels, configs, rng=numpy.random.default_rng(8)
+    )
+
+    assert numpy.array_equal(
+        first["noise"]["y_pred_stressed"], second["noise"]["y_pred_stressed"]
+    ), "the same explicit seed produced different batch results"
+    assert not numpy.array_equal(
+        first["noise"]["y_pred_stressed"], other["noise"]["y_pred_stressed"]
+    ), (
+        "two different seeds produced identical stressed predictions, so the "
+        "reproducibility check above is vacuous — the batch path is not drawing "
+        "from the injected rng"
+    )
+
+
+def test_batch_stress_rng_none_still_falls_back_to_the_instance_generator():
+    """``rng=None`` preserves the pre-ADR-031 behaviour (``self.rng``).
+
+    A tester seeded at construction and called with no ``rng`` must match a
+    fresh tester called with ``rng=default_rng(<the same seed>)``.  That is the
+    equivalence the removed ``stress_tester.rng = ctx.rng`` rebind used to
+    provide, now expressed through the fallback in ``_apply``.
+    """
+    numpy = pytest.importorskip("numpy")
+    from modules.stress_module import StressTester
+
+    model, frame, labels, configs = _rng_sensitive_batch_frame()
+    via_instance = StressTester(rng=numpy.random.default_rng(11)).batch_stress_test(
+        model, frame, labels, configs
+    )
+    explicit = StressTester().batch_stress_test(
+        model, frame, labels, configs, rng=numpy.random.default_rng(11)
+    )
+    assert numpy.array_equal(
+        via_instance["noise"]["y_pred_stressed"], explicit["noise"]["y_pred_stressed"]
+    ), "rng=None did not fall back to the instance generator"
+
+
+def test_batch_stress_explicit_rng_overrides_the_instance_generator():
+    """An explicit ``rng`` must win over ``self.rng``, not be ignored."""
+    numpy = pytest.importorskip("numpy")
+    from modules.stress_module import StressTester
+
+    model, frame, labels, configs = _rng_sensitive_batch_frame()
+    overridden = StressTester(rng=numpy.random.default_rng(1)).batch_stress_test(
+        model, frame, labels, configs, rng=numpy.random.default_rng(2)
+    )
+    reference = StressTester().batch_stress_test(
+        model, frame, labels, configs, rng=numpy.random.default_rng(2)
+    )
+    ignored = StressTester(rng=numpy.random.default_rng(1)).batch_stress_test(
+        model, frame, labels, configs
+    )
+    assert numpy.array_equal(
+        overridden["noise"]["y_pred_stressed"], reference["noise"]["y_pred_stressed"]
+    ), "the explicit rng did not override the instance generator"
+    assert not numpy.array_equal(
+        overridden["noise"]["y_pred_stressed"], ignored["noise"]["y_pred_stressed"]
+    ), "the explicit rng argument was ignored in favour of self.rng"

@@ -32,7 +32,9 @@ from __future__ import annotations
 import ast
 import json
 import re
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -3434,4 +3436,298 @@ def test_the_comparison_normaliser_gate_would_catch_a_bypass() -> None:
     )
     assert len(_named_defs(duplicated, _COMPARISON_NORMALISER)) == 2, (
         "the definition count did not see the duplicate helper"
+    )
+
+
+# ── ADR-029 tracked gate evidence ────────────────────────────────────────────
+#
+# The minimal proof bundle for ADR-001's security boundary, the §2.2 root-module
+# gates and the §10.1 T0 tier / §4.9 CLI promise.  It lives under ``tests/``
+# rather than a new top-level ``scripts/`` path because §2.2 declares exactly
+# two root modules, and it was promoted out of the gitignored
+# ``.forge/runs/run-003/evidence/`` tree so a fresh clone can reproduce the
+# claims ``decisions.md`` makes (ADR-029).  Evidence that cannot ship with the
+# tree is a claim, not evidence.
+#
+# The probes are **not** ``test_``-named, so pytest never collects them; the
+# collection glob is ``tests/test_*.py`` at the top level only, which also keeps
+# this directory clear of the unrelated ``tests/test_evidence.py``.
+
+#: Directory holding the committed gate-evidence bundle.
+EVIDENCE_DIR: tuple[str, ...] = ("tests", "evidence")
+
+#: Every artefact the bundle must contain.  Deleting any one is a failure;
+#: :func:`test_the_evidence_bundle_gate_would_catch_a_deletion` proves it.
+EVIDENCE_MEMBERS: tuple[str, ...] = (
+    "t0_bare_venv.sh",
+    "mutation_probe.py",
+    "main_py_gate_probe.py",
+    "README.md",
+)
+
+#: The members that are Python and must therefore parse.
+EVIDENCE_PYTHON_MEMBERS: tuple[str, ...] = (
+    "mutation_probe.py",
+    "main_py_gate_probe.py",
+)
+
+
+def _missing_evidence(base: Path, members: tuple[str, ...]) -> list[str]:
+    """Return the named members absent from ``base``.
+
+    Args:
+        base: Directory the bundle is expected in.
+        members: Filenames the bundle must contain.
+
+    Returns:
+        list[str]: Missing filenames, in declaration order (empty when complete).
+    """
+    return [name for name in members if not (base / name).is_file()]
+
+
+def _untracked_evidence(
+    base: Path, members: tuple[str, ...], *, git_binary: str = "git"
+) -> list[str]:
+    """Return the named members that are not tracked in git.
+
+    Args:
+        base: Directory the bundle is expected in.
+        members: Filenames the bundle must contain.
+        git_binary: Path or name of the git binary (default ``"git"``).
+
+    Returns:
+        list[str]: Untracked filenames, in declaration order (empty when all tracked).
+
+    Raises:
+        AssertionError: If git is not installed or not found on PATH, or if base
+            is not within a git repository.
+    """
+    untracked: list[str] = []
+    for name in members:
+        try:
+            proc = subprocess.run(
+                [git_binary, "ls-files", "--error-unmatch", name],
+                cwd=str(base),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise AssertionError(
+                "git is required to verify that the evidence bundle is tracked, "
+                f"but '{git_binary}' was not found on PATH."
+            ) from exc
+
+        if proc.returncode == 0:
+            continue
+        if "not a git repository" in proc.stderr:
+            pytest.skip(
+                f"git reported that {base} is not a git repository; "
+                "skipping git tracking verification."
+            )
+        untracked.append(name)
+    return untracked
+
+
+def test_gate_evidence_bundle_is_tracked() -> None:
+    """ADR-029 / ADR-033: the gate evidence is committed/tracked, parses, and is shell-clean.
+
+    Four separate claims, because each fails differently:
+
+    * **presence** — ``decisions.md`` cites ``mutation_probe.py`` and
+      ``main_py_gate_probe.py`` as the verification of ADR-001 and the §2.2
+      gates, and ``t0_bare_venv.sh`` for the §10.1 T0 tier; if the files are
+      gone those claims are un-backable from a fresh clone;
+    * **importability** — a probe that does not parse is not runnable, so it
+      proves nothing;
+    * **shell syntax** — ``bash -n`` parses ``t0_bare_venv.sh`` without executing
+      it, so a shell typo fails here rather than mid-run on a bare interpreter;
+    * **tracking** — ``git ls-files --error-unmatch`` proves the files are
+      tracked in git, not merely sitting as untracked files in a developer's
+      working tree (ADR-033). Cleanly skipped if executed outside a git repository.
+
+    Returns:
+        None
+    """
+    base = ROOT.joinpath(*EVIDENCE_DIR)
+    missing = _missing_evidence(base, EVIDENCE_MEMBERS)
+    assert not missing, (
+        "the ADR-029 gate-evidence bundle is incomplete: missing "
+        f"{missing} from {'/'.join(EVIDENCE_DIR)}. The probes are the committed "
+        "verification of ADR-001 / the §2.2 gates / the T0 tier; without them "
+        "those claims cannot be reproduced from a fresh clone."
+    )
+
+    for name in EVIDENCE_PYTHON_MEMBERS:
+        path = base / name
+        try:
+            ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except SyntaxError as exc:  # pragma: no cover - failure path
+            raise AssertionError(
+                f"{'/'.join(EVIDENCE_DIR)}/{name} does not parse: {exc}. A probe "
+                "that cannot be imported cannot be re-run, so the gate it proves "
+                "is back to being an unverifiable claim."
+            ) from exc
+
+    script = base / "t0_bare_venv.sh"
+    proc = subprocess.run(
+        ["bash", "-n", str(script)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, (
+        f"bash -n rejected {'/'.join(EVIDENCE_DIR)}/t0_bare_venv.sh:\n"
+        f"{proc.stderr}"
+    )
+
+    untracked = _untracked_evidence(base, EVIDENCE_MEMBERS)
+    assert not untracked, (
+        "the ADR-029 / ADR-033 gate-evidence bundle is untracked in git: "
+        f"{untracked} in {'/'.join(EVIDENCE_DIR)}. The probes are the committed "
+        "verification of ADR-001 / the §2.2 gates / the T0 tier; without being "
+        "tracked in git they cannot be reproduced from a fresh clone."
+    )
+
+
+def test_the_evidence_bundle_gate_would_catch_a_deletion() -> None:
+    """Falsify :func:`test_gate_evidence_bundle_is_tracked`.
+
+    A presence gate that cannot fail is not a gate, and this one is a file
+    listing — the failure mode is a helper that reports "nothing missing" for
+    any input. Deleting a member must be reported, so the helper is exercised
+    against a synthetic directory containing all but one member. This does
+    **not** touch the real bundle.
+
+    Returns:
+        None
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        for name in EVIDENCE_MEMBERS[:-1]:
+            (base / name).write_text("", encoding="utf-8")
+        assert _missing_evidence(base, EVIDENCE_MEMBERS) == [EVIDENCE_MEMBERS[-1]], (
+            "the presence helper did not notice a missing member"
+        )
+        assert _missing_evidence(base, ()) == [], (
+            "the presence helper reported a missing member for an empty request"
+        )
+
+
+def test_the_evidence_bundle_gate_would_catch_an_untracked_member() -> None:
+    """Falsify the tracking claim in :func:`test_gate_evidence_bundle_is_tracked`.
+
+    A tracking gate that cannot fail is not a gate. Deleting tracking on a
+    present member must be reported, and an unavailable git binary must fail
+    closed rather than passing. Exercised in a temporary directory with a
+    synthetic git repository.
+
+    Returns:
+        None
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        proc_init = subprocess.run(
+            ["git", "init", "-q"],
+            cwd=str(base),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc_init.returncode != 0:
+            raise AssertionError(f"git init failed in temporary directory:\n{proc_init.stderr}")
+
+        for name in EVIDENCE_MEMBERS:
+            (base / name).write_text("dummy", encoding="utf-8")
+
+        for name in EVIDENCE_MEMBERS[:-1]:
+            subprocess.run(
+                ["git", "add", name],
+                cwd=str(base),
+                check=True,
+                capture_output=True,
+            )
+
+        untracked = _untracked_evidence(base, EVIDENCE_MEMBERS)
+        assert untracked == [EVIDENCE_MEMBERS[-1]], (
+            f"expected untracked member {[EVIDENCE_MEMBERS[-1]]}, got {untracked}"
+        )
+
+        with pytest.raises(AssertionError, match="not found on PATH"):
+            _untracked_evidence(base, EVIDENCE_MEMBERS, git_binary="nonexistent_git_binary_xyz")
+
+
+def test_evidence_probe_anchors_resolve_against_the_tree() -> None:
+    """ADR-032: the probes' source anchors still resolve against the live tree.
+
+    ``test_gate_evidence_bundle_is_tracked`` proves the bundle *exists* and
+    parses; it never runs a probe, so a probe whose declared ``(rel, old, new)``
+    anchor has drifted out of the tree still ships green — exactly what happened
+    to the ADR-001c anchor after ADR-024's read-once ``load()`` change. This gate
+    runs each probe's side-effect-free ``--check-anchors`` in a subprocess and
+    requires exit ``0``, so production text that moves an anchor fails the suite
+    in milliseconds. It is deliberately not the full mutation run (which spawns
+    nested ``pytest`` subprocesses and mutates source files); that stays the
+    on-demand evidence path.
+
+    Returns:
+        None
+    """
+    base = ROOT.joinpath(*EVIDENCE_DIR)
+    for name in EVIDENCE_PYTHON_MEMBERS:
+        probe = base / name
+        proc = subprocess.run(
+            [sys.executable, str(probe), "--check-anchors"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode == 0, (
+            f"the {name} probe's --check-anchors self-check failed (exit "
+            f"{proc.returncode}). Its declared source anchors no longer resolve "
+            "against the tree — a probe whose anchors cannot match is dead, and "
+            "the ADR-029 evidence it provides is a claim, not proof.\n"
+            f"{proc.stdout}\n{proc.stderr}"
+        )
+
+
+def test_the_anchor_freshness_gate_would_catch_a_stale_anchor(tmp_path: Path) -> None:
+    """Falsify :func:`test_evidence_probe_anchors_resolve_against_the_tree`.
+
+    A freshness gate that cannot fail is not a gate. This copies the real
+    ``mutation_probe.py`` source, pins its ``ROOT`` to the tree and injects one
+    deliberately stale declared anchor, then requires ``--check-anchors`` to exit
+    non-zero. The injected anchor is a pass/fail distinction, not a comment or an
+    unrelated string: nothing in this file's import graph can make it resolve, so
+    the failure is attributable to the anchor check itself.
+
+    Returns:
+        None
+    """
+    source = ROOT.joinpath(*EVIDENCE_DIR, "mutation_probe.py")
+    text = source.read_text(encoding="utf-8")
+
+    root_line = "ROOT = Path(__file__).resolve().parents[2]"
+    assert root_line in text, "the probe's ROOT line moved; update this falsification"
+    text = text.replace(root_line, f"ROOT = Path({str(ROOT)!r})", 1)
+
+    stale = '    "load_model_trust",\n'
+    injected = '    "zz_stale_anchor_absent_from_the_tree",\n'
+    assert stale in text, "the M2C declared anchor moved; update this falsification"
+    text = text.replace(stale, injected, 1)
+
+    patched = tmp_path / "mutation_probe_stale.py"
+    patched.write_text(text, encoding="utf-8")
+
+    proc = subprocess.run(
+        [sys.executable, str(patched), "--check-anchors"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode != 0, (
+        "--check-anchors reported success for a deliberately stale anchor, so "
+        "the freshness gate cannot fail and is not a gate."
     )

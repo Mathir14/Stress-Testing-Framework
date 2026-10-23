@@ -43,13 +43,10 @@ def render(ctx: AppContext) -> None:
     elif not ctx.has_models():
         st.warning("⚠️ Please train at least one model in Module 2 first.")
     else:
-        # ADR-011.4: rebind the singleton to *this* script run's generator.
-        # ``batch_stress_test`` is a frozen signature that expands
-        # ``self.<op>(X, **params)``, so it has no place to take an explicit
-        # ``rng``; assigning the per-run generator is what makes the batch path
-        # honour ``ctx.rng`` without changing the frozen API.
-        stress_tester.rng = ctx.rng
-
+        # ADR-031: the per-run generator is passed into
+        # ``batch_stress_test(rng=ctx.rng)`` at the call site instead of being
+        # rebound onto the session singleton.  The batch path now carries the
+        # seed through the call graph, matching the single-test path below.
         tab1, tab2, tab3, tab4 = st.tabs(
             [
                 "🎯 Single Stress Test",
@@ -179,7 +176,10 @@ def render(ctx: AppContext) -> None:
                     3.0,
                     1.5,
                     0.1,
-                    help="Features randomly scaled by factor or 1/factor",
+                    help=(
+                        "Features randomly scaled by factor or 1/factor. "
+                        "1.0 is the identity (no change) and is excluded."
+                    ),
                 )
                 params = {"scale_factor": scale_factor}
 
@@ -513,7 +513,9 @@ def render(ctx: AppContext) -> None:
                     # repeated column label or a non-numeric column rejected by
                     # ``coerce_numeric_frame``.  That is rendered, not raised.
                     try:
-                        results = stress_tester.batch_stress_test(model, X, y, stress_configs)
+                        results = stress_tester.batch_stress_test(
+                            model, X, y, stress_configs, rng=ctx.rng
+                        )
                     except FrameworkError as exc:
                         render_error(exc)
                     else:

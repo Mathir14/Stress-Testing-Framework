@@ -117,7 +117,7 @@ class DataManager:
             "duplicates": df.duplicated().sum(),
             "numeric_columns": df.select_dtypes(include=[np.number]).columns.tolist(),
             "categorical_columns": df.select_dtypes(
-                include=["object"]
+                include=["object", "category", "string"]
             ).columns.tolist(),
             "memory_usage": df.memory_usage(deep=True).sum() / 1024**2,  # MB
         }
@@ -362,7 +362,8 @@ class DataManager:
             tuple: (X_train_scaled, X_val_scaled, X_test_scaled).
 
         Raises:
-            ValidationError: If any column in X_train, X_val, or X_test is non-numeric.
+            ValidationError: If any column in X_train, X_val, or X_test is non-numeric,
+                contains missing values (NaN), or contains non-finite values (inf).
         """
         datasets = [("X_train", X_train)]
         if X_val is not None:
@@ -371,14 +372,23 @@ class DataManager:
             datasets.append(("X_test", X_test))
 
         non_numeric_cols: list[str] = []
+        nan_cols: list[str] = []
+        inf_cols: list[str] = []
         for _, df in datasets:
             if not isinstance(df, pd.DataFrame):
                 continue
             for col in df.columns:
+                col_str = str(col)
                 if not pd.api.types.is_numeric_dtype(df[col]):
-                    col_str = str(col)
                     if col_str not in non_numeric_cols:
                         non_numeric_cols.append(col_str)
+                else:
+                    if np.isinf(df[col]).any():
+                        if col_str not in inf_cols:
+                            inf_cols.append(col_str)
+                if df[col].isnull().any():
+                    if col_str not in nan_cols:
+                        nan_cols.append(col_str)
 
         if non_numeric_cols:
             raise ValidationError(
@@ -387,6 +397,24 @@ class DataManager:
                 field="columns",
                 value=non_numeric_cols,
                 context={"non_numeric_columns": non_numeric_cols},
+            )
+
+        if nan_cols:
+            raise ValidationError(
+                f"Cannot scale features with missing values (NaN) in columns: {nan_cols}. "
+                "Clean missing values before scaling.",
+                field="columns",
+                value=nan_cols,
+                context={"nan_columns": nan_cols},
+            )
+
+        if inf_cols:
+            raise ValidationError(
+                f"Cannot scale features with non-finite values (inf) in columns: {inf_cols}. "
+                "Ensure all values are finite before scaling.",
+                field="columns",
+                value=inf_cols,
+                context={"inf_columns": inf_cols},
             )
 
         self.scaler = StandardScaler()
@@ -474,15 +502,69 @@ class DataManager:
             Tuple: (X_train, X_val, X_test, y_train, y_val, y_test)
 
         Raises:
+            ValidationError: If target_column is not in the dataset, contains missing
+                values (NaN), contains non-finite values (inf), or if feature
+                columns contain missing values (NaN) or non-finite values (inf).
             DatasetError: If a split cannot be taken even after the stratify
                 guard falls back to a non-stratified split.
         """
-        self.target_column = target_column
+        if target_column not in df.columns:
+            raise ValidationError(
+                f"Target column '{target_column}' not found in dataset.",
+                field="target_column",
+                value=target_column,
+                context={"target_column": target_column},
+            )
+
+        missing_count = int(df[target_column].isnull().sum())
+        if missing_count > 0:
+            raise ValidationError(
+                f"Target column '{target_column}' contains {missing_count} missing value(s). "
+                "Clean or drop missing target values before splitting.",
+                field=target_column,
+                value=missing_count,
+                context={"target_column": target_column, "missing_count": missing_count},
+            )
+
+        if pd.api.types.is_numeric_dtype(df[target_column]):
+            if np.isinf(df[target_column]).any():
+                raise ValidationError(
+                    f"Target column '{target_column}' contains non-finite values (inf). "
+                    "Ensure all target values are finite before splitting.",
+                    field=target_column,
+                    value=target_column,
+                    context={"target_column": target_column},
+                )
 
         # Separate features and target
         X = df.drop(columns=[target_column])
         y = df[target_column]
 
+        nan_feature_cols = [str(c) for c in X.columns if X[c].isnull().any()]
+        if nan_feature_cols:
+            raise ValidationError(
+                f"Feature columns contain missing values (NaN) in columns: {nan_feature_cols}. "
+                "Clean missing values before splitting.",
+                field="features",
+                value=nan_feature_cols,
+                context={"nan_columns": nan_feature_cols},
+            )
+
+        inf_feature_cols = [
+            str(c)
+            for c in X.columns
+            if pd.api.types.is_numeric_dtype(X[c]) and np.isinf(X[c]).any()
+        ]
+        if inf_feature_cols:
+            raise ValidationError(
+                f"Feature columns contain non-finite values (inf) in columns: {inf_feature_cols}. "
+                "Ensure all feature values are finite before splitting.",
+                field="features",
+                value=inf_feature_cols,
+                context={"inf_columns": inf_feature_cols},
+            )
+
+        self.target_column = target_column
         self.feature_columns = X.columns.tolist()
 
         # First split: separate test set
@@ -616,3 +698,13 @@ class DataManager:
             "target_column": self.target_column,
             "feature_columns": self.feature_columns,
         }
+
+    def reset_splits(self) -> None:
+        """Reset internal split attributes to None."""
+        self.X_train = None
+        self.X_val = None
+        self.X_test = None
+        self.y_train = None
+        self.y_val = None
+        self.y_test = None
+

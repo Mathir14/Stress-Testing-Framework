@@ -86,8 +86,8 @@ def _service_factories() -> dict[str, Callable[[], object]]:
     No factory captures the RNG.  ``StressTester`` is a session-state singleton
     that outlives a script run, so binding it to one run's generator here would
     make results depend on when it happened to be created.  The stress view
-    rebinds ``stress_tester.rng = ctx.rng`` on every run instead (ADR-011.4),
-    which is the only place that legitimately holds the generator.
+    passes ``rng=ctx.rng`` at each call site instead (ADR-031), which is the only
+    place that legitimately holds the generator.
     """
     return {
         StateKeys.DATA_MANAGER: DataManager,

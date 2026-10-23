@@ -490,6 +490,86 @@ def test_scale_features_synchronizes_partial_splits_clearing_stale(manager: Data
     pd.testing.assert_frame_equal(manager.X_train, scaled_train)
 
 
+def test_split_data_rejects_nan_in_target_column(manager: DataManager):
+    """split_data raises ValidationError when target_column contains NaN."""
+    frame = pd.DataFrame(
+        {
+            "x": np.arange(20.0),
+            "y": [0, 1, 0, 1, 0, np.nan, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
+        }
+    )
+    with pytest.raises(ValidationError, match="contains 1 missing value"):
+        manager.split_data(frame, "y")
+
+
+def test_split_data_rejects_inf_in_target_column(manager: DataManager):
+    """split_data raises ValidationError when target_column contains inf."""
+    frame = pd.DataFrame(
+        {
+            "x": np.arange(20.0),
+            "y": [0, 1, 0, 1, 0, np.inf, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
+        }
+    )
+    with pytest.raises(ValidationError, match="contains non-finite values"):
+        manager.split_data(frame, "y")
+
+
+def test_split_data_rejects_nan_in_feature_columns(manager: DataManager):
+    """split_data raises ValidationError when features contain NaN."""
+    frame = pd.DataFrame(
+        {
+            "x": [1.0, np.nan] + [float(i) for i in range(18)],
+            "y": [0, 1] * 10,
+        }
+    )
+    with pytest.raises(ValidationError, match="Feature columns contain missing values"):
+        manager.split_data(frame, "y")
+
+
+def test_split_data_rejects_inf_in_feature_columns(manager: DataManager):
+    """split_data raises ValidationError when features contain inf."""
+    frame = pd.DataFrame(
+        {
+            "x": [1.0, np.inf] + [float(i) for i in range(18)],
+            "y": [0, 1] * 10,
+        }
+    )
+    with pytest.raises(ValidationError, match="Feature columns contain non-finite values"):
+        manager.split_data(frame, "y")
+
+
+def test_scale_features_rejects_nan_values(manager: DataManager):
+    """scale_features raises ValidationError when features contain NaN."""
+    bad_train = pd.DataFrame({"num1": [1.0, np.nan, 3.0], "num2": [4.0, 5.0, 6.0]})
+    with pytest.raises(ValidationError, match="Cannot scale features with missing values"):
+        manager.scale_features(bad_train)
+
+    good_train = pd.DataFrame({"num1": [1.0, 2.0, 3.0], "num2": [4.0, 5.0, 6.0]})
+    bad_val = pd.DataFrame({"num1": [np.nan, 2.0], "num2": [4.0, 5.0]})
+    with pytest.raises(ValidationError, match="Cannot scale features with missing values"):
+        manager.scale_features(good_train, X_val=bad_val)
+
+    bad_test = pd.DataFrame({"num1": [1.0, 2.0], "num2": [np.nan, 5.0]})
+    with pytest.raises(ValidationError, match="Cannot scale features with missing values"):
+        manager.scale_features(good_train, X_test=bad_test)
+
+
+def test_scale_features_rejects_inf_values(manager: DataManager):
+    """scale_features raises ValidationError when features contain inf."""
+    bad_train = pd.DataFrame({"num1": [1.0, np.inf, 3.0], "num2": [4.0, 5.0, 6.0]})
+    with pytest.raises(ValidationError, match="Cannot scale features with non-finite values"):
+        manager.scale_features(bad_train)
+
+    good_train = pd.DataFrame({"num1": [1.0, 2.0, 3.0], "num2": [4.0, 5.0, 6.0]})
+    bad_val = pd.DataFrame({"num1": [-np.inf, 2.0], "num2": [4.0, 5.0]})
+    with pytest.raises(ValidationError, match="Cannot scale features with non-finite values"):
+        manager.scale_features(good_train, X_val=bad_val)
+
+    bad_test = pd.DataFrame({"num1": [1.0, 2.0], "num2": [np.inf, 5.0]})
+    with pytest.raises(ValidationError, match="Cannot scale features with non-finite values"):
+        manager.scale_features(good_train, X_test=bad_test)
+
+
 def test_get_split_summary_raises_when_unprepared(manager: DataManager):
     """§9 item 2: the pre-remediation ``None`` return became a typed error."""
     with pytest.raises(DatasetError):
@@ -553,3 +633,58 @@ def test_get_summary_frames_reports_every_table(manager: DataManager):
     assert set(summary) == {"preview", "columns", "statistics"}
     for key, table in summary.items():
         assert isinstance(table, pd.DataFrame), f"{key} is not a DataFrame"
+
+
+def test_validate_dataset_detects_object_category_and_string_columns(manager: DataManager):
+    """MAJ-3 / T2 / T4: validate_dataset detects object, category, and string dtypes."""
+    df = pd.DataFrame(
+        {
+            "num": [1, 2, 3],
+            "obj_col": ["a", "b", "c"],
+            "cat_col": pd.Series(["cat1", "cat2", "cat3"], dtype="category"),
+            "str_col": pd.Series(["x", "y", "z"], dtype="string"),
+        }
+    )
+    report = manager.validate_dataset(df)
+    assert report["shape"] == (3, 4)
+    assert report["numeric_columns"] == ["num"]
+    assert set(report["categorical_columns"]) == {"obj_col", "cat_col", "str_col"}
+    assert report["duplicates"] == 0
+    assert report["missing_values"] == {"num": 0, "obj_col": 0, "cat_col": 0, "str_col": 0}
+
+
+def test_validate_dataset_purely_numeric(manager: DataManager):
+    """Purely numeric datasets return empty categorical_columns."""
+    df = pd.DataFrame({"a": [1.0, 2.0], "b": [3, 4]})
+    report = manager.validate_dataset(df)
+    assert report["numeric_columns"] == ["a", "b"]
+    assert report["categorical_columns"] == []
+
+
+def test_validate_dataset_validation_errors(manager: DataManager):
+    """validate_dataset validates input type and non-empty rows."""
+    with pytest.raises(ValidationError):
+        manager.validate_dataset("not a dataframe")  # type: ignore[arg-type]
+
+    with pytest.raises(DatasetError):
+        manager.validate_dataset(pd.DataFrame())
+
+
+def test_reset_splits_clears_all_splits(manager: DataManager):
+    """MIN-2 / T2 / T4: reset_splits resets all 6 split attributes to None."""
+    manager.X_train = pd.DataFrame({"a": [1]})
+    manager.X_val = pd.DataFrame({"a": [2]})
+    manager.X_test = pd.DataFrame({"a": [3]})
+    manager.y_train = pd.Series([1])
+    manager.y_val = pd.Series([2])
+    manager.y_test = pd.Series([3])
+
+    manager.reset_splits()
+
+    assert manager.X_train is None
+    assert manager.X_val is None
+    assert manager.X_test is None
+    assert manager.y_train is None
+    assert manager.y_val is None
+    assert manager.y_test is None
+

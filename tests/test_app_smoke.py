@@ -1149,7 +1149,7 @@ def test_pressing_run_batch_stress_produces_results_for_every_registry_key(
 def test_dataset_with_missing_values_splits_and_trains_successfully(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A dataset containing missing values is auto-cleaned on split and trains cleanly in Module 2."""
+    """A dataset containing missing values fails to split dirty, cleans via Cleaning tab, and trains cleanly."""
     csv_bytes = (
         b"feat_a,feat_b,target\n"
         b"1.0,,0\n"
@@ -1179,23 +1179,249 @@ def test_dataset_with_missing_values_splits_and_trains_successfully(
     app = _run(PAGE_KEYS[0])
     load_btn = next((b for b in app.button if b.label == "Load Dataset"), None)
     assert load_btn is not None
-    load_btn.click().run()
+    app = load_btn.click().run()
     assert app.session_state[StateKeys.DATA_LOADED] is True
 
-    # 2. Split dataset on Module 1
+    # 2. Attempting to split before cleaning fails validation
+    target_select = next((s for s in app.selectbox if s.label == "Select Target Column:"), None)
+    assert target_select is not None
+    target_select.set_value("target")
+
+    # DEF-J-03-TEXT-10: Verify proactive missing values (NaN) warning banner in Tab 5
+    assert any("missing values (NaN)" in str(w.value) for w in app.warning)
+
     split_btn = next((b for b in app.button if b.label == "Split Dataset"), None)
     assert split_btn is not None
-    split_btn.click().run()
+    app = split_btn.click().run()
+    assert any("missing values" in str(e.value) for e in app.error)
+    assert StateKeys.DATA_PREPARED not in app.session_state or app.session_state[StateKeys.DATA_PREPARED] is not True
+
+    # 3. Clean missing values via the Cleaning tab
+    clean_btn = next((b for b in app.button if b.label == "Apply Missing Value Handling"), None)
+    assert clean_btn is not None
+    app = clean_btn.click().run()
+
+    # Streamlit AppTest retains unrendered widget nodes in ElementTree across st.rerun(),
+    # but Streamlit prunes their session_state keys on script finish. Populate fallback keys:
+    for col in ("feat_a", "feat_b"):
+        app.session_state[f"missing_{col}"] = "mean"
+
+    # 4. Split dataset successfully
+    target_select = next((s for s in app.selectbox if s.label == "Select Target Column:"), None)
+    assert target_select is not None
+    target_select.set_value("target")
+
+    split_btn = next((b for b in app.button if b.label == "Split Dataset"), None)
+    assert split_btn is not None
+    app = split_btn.click().run()
     assert app.session_state[StateKeys.DATA_PREPARED] is True
 
-    # 3. Navigate to Module 2 and train Logistic Regression
+    # 5. Navigate to Module 2 and train Logistic Regression
     app.sidebar.radio[0].set_value(PAGE_KEYS[1]).run()
     train_btn = next((b for b in app.button if "Train" in b.label), None)
     assert train_btn is not None
-    train_btn.click().run()
+    app = train_btn.click().run()
 
     assert app.session_state[StateKeys.MODEL_TRAINED] is True
     success_texts = [s.value for s in app.success]
     assert any("trained successfully!" in t for t in success_texts)
 
+
+def test_data_management_split_button_present_on_empty_state() -> None:
+    """DEF-J-05-ELEM-6: Split Dataset button must be discoverable in the DOM even on empty session state."""
+    app = _run(PAGE_KEYS[0])
+    split_btn = next((b for b in app.button if b.label == "Split Dataset"), None)
+    assert split_btn is not None
+    assert split_btn.disabled is True
+    # If clicked while disabled, it warns rather than raises UnboundLocalError
+    app = split_btn.click().run()
+    assert any("Please upload a dataset first" in str(w.value) for w in app.warning)
+
+
+def test_reports_page_renders_executive_summary() -> None:
+    """DEF-J-04-TEXT-6 / DEF-J-04-TEXT-19: Visualization & Reports renders Executive Summary and Briefing."""
+    seeded = _prepared_state()
+    app = _on_page(PAGE_KEYS[8], seeded)
+    subheaders = [s.value for s in app.subheader]
+    assert any("Executive Summary" in s for s in subheaders), (
+        f"Executive Summary not found in subheaders: {subheaders}"
+    )
+    infos = [str(i.value) for i in app.info]
+    assert any("Executive Briefing" in s for s in infos), (
+        f"Executive Briefing not found in info boxes: {infos}"
+    )
+
+
+def test_data_management_tab_sequence() -> None:
+    """ADR-039 / run-007 Critic MAJ-1: Data Management tabs follow canonical sequential workflow."""
+    app = _run(PAGE_KEYS[0])
+    tab_labels = [t.label for t in app.tabs]
+    assert tab_labels == [
+        "📁 Upload Data",
+        "🔍 Validation",
+        "🧹 Cleaning",
+        "🔄 Encoding & Scaling",
+        "✂️ Train/Val/Test Split",
+    ]
+
+
+def test_data_management_conditional_validation_execution() -> None:
+    """ADR-040 §4 / run-007 Critic MAJ-2: validate_dataset executes conditionally only on button click."""
+    seeded = _prepared_state()
+    app = _on_page(PAGE_KEYS[0], seeded)
+
+    # Before clicking "Run Validation", metrics from validation report are absent
+    metrics_before = [m.label for m in app.metric]
+    assert "Total Rows" not in metrics_before
+
+    btn = next((b for b in app.button if b.label == "Run Validation"), None)
+    assert btn is not None
+
+    app = btn.click().run()
+    metrics_after = [m.label for m in app.metric]
+    assert "Total Rows" in metrics_after
+    assert any("Validation completed successfully" in str(s.value) for s in app.success)
+
+    # MAJ-2: Persistence across reruns without re-clicking button
+    app = app.run()
+    assert "Total Rows" in [m.label for m in app.metric]
+
+
+def test_validation_report_lifecycle_persistence_and_invalidation() -> None:
+    """MAJ-2 / T1 / T3 / T5: validation_report persists across reruns and invalidates on cleaning."""
+    from core.state import StateKeys
+
+    seeded = _prepared_state()
+    app = _on_page(PAGE_KEYS[0], seeded)
+
+    # Click Run Validation
+    btn = next((b for b in app.button if b.label == "Run Validation"), None)
+    assert btn is not None
+    app = btn.click().run()
+
+    assert app.session_state[StateKeys.VALIDATION_REPORT] is not None
+    assert "Total Rows" in [m.label for m in app.metric]
+
+    # Re-running the app without clicking preserves validation metrics
+    app = app.run()
+    assert app.session_state[StateKeys.VALIDATION_REPORT] is not None
+    assert "Total Rows" in [m.label for m in app.metric]
+
+    # Mutating raw data via dirty state duplicate removal invalidates report
+    manager = app.session_state[StateKeys.DATA_MANAGER]
+    messy = manager.raw_data.copy()
+    messy = pd.concat([messy, messy.iloc[[0]]], ignore_index=True)
+    manager.raw_data = messy
+    app = app.run()
+
+    rm_btn = next((b for b in app.button if b.label == "Remove Duplicate Rows"), None)
+    assert rm_btn is not None
+    app = rm_btn.click().run()
+
+    assert app.session_state[StateKeys.VALIDATION_REPORT] is None
+
+
+def test_app_context_invalidate_from_clears_validation_report() -> None:
+    """T1 / T5: AppContext.invalidate_from clears VALIDATION_REPORT on step <= 1 only."""
+    from core.state import AppContext, StateKeys
+
+    store: dict[str, object] = {
+        StateKeys.VALIDATION_REPORT: {"shape": (10, 2)},
+        StateKeys.PREDICTIONS: {"pred": [1]},
+        StateKeys.SINGLE_STRESS_RESULT: {"res": 1},
+        StateKeys.DATA_PREPARED: True,
+        StateKeys.MODEL_TRAINED: True,
+    }
+    ctx = AppContext(store=store, rng=np.random.default_rng(42))
+
+    # Invalidate step 3: VALIDATION_REPORT and PREDICTIONS preserved
+    ctx.invalidate_from(3)
+    assert store[StateKeys.VALIDATION_REPORT] is not None
+    assert store[StateKeys.PREDICTIONS] is not None
+    assert store[StateKeys.SINGLE_STRESS_RESULT] is None
+
+    # Invalidate step 2: VALIDATION_REPORT preserved
+    ctx.invalidate_from(2)
+    assert store[StateKeys.VALIDATION_REPORT] is not None
+    assert store[StateKeys.PREDICTIONS] is None
+
+    # Invalidate step 1: VALIDATION_REPORT cleared
+    ctx.invalidate_from(1)
+    assert store[StateKeys.VALIDATION_REPORT] is None
+
+
+def test_tab3_boundary_null_warning() -> None:
+    """MIN-1 / T3 / T5: Warning shown when forward_fill leaves boundary nulls."""
+    from core.state import StateKeys
+
+    seeded = _prepared_state()
+    manager = seeded[StateKeys.DATA_MANAGER]
+    # Set first cell to NaN so forward_fill cannot fill it
+    df = manager.raw_data.copy()
+    df.loc[df.index[0], "feature_signal"] = np.nan
+    manager.raw_data = df
+
+    app = _on_page(PAGE_KEYS[0], seeded)
+
+    # Strategy for feature_signal defaults to mean, let's select forward_fill
+    sb = next((s for s in app.selectbox if s.key == "missing_feature_signal"), None)
+    assert sb is not None
+    app = sb.select("forward_fill").run()
+
+    btn = next((b for b in app.button if b.label == "Apply Missing Value Handling"), None)
+    assert btn is not None
+    app = btn.click().run()
+
+    # Boundary null warning is rendered
+    assert any("boundary nulls remain" in str(w.value) for w in app.warning)
+
+
+def test_tab4_categorical_discovery_includes_category_and_string() -> None:
+    """MAJ-3 / T3 / T5: Tab 4 discovers category and string dtypes."""
+    from core.state import StateKeys
+
+    seeded = _prepared_state()
+    manager = seeded[StateKeys.DATA_MANAGER]
+    df = pd.DataFrame(
+        {
+            "num": [1, 2, 3, 4, 5],
+            "cat_feat": pd.Series(["a", "b", "a", "b", "a"], dtype="category"),
+            "str_feat": pd.Series(["x", "y", "x", "y", "x"], dtype="string"),
+            "target": [0, 1, 0, 1, 0],
+        }
+    )
+    manager.raw_data = df
+
+    app = _on_page(PAGE_KEYS[0], seeded)
+    cat_texts = [str(w.value) for w in app.markdown if "Categorical columns found" in str(w.value)]
+    assert len(cat_texts) > 0
+    assert "cat_feat" in cat_texts[0]
+    assert "str_feat" in cat_texts[0]
+
+
+def test_tab5_scaling_failure_resets_splits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MIN-2 / T2 / T3 / T5: Split failure inside scaling resets splits via DataManager.reset_splits."""
+    from core.errors import ValidationError
+    from core.state import StateKeys
+    from modules.data_module import DataManager
+
+    seeded = _prepared_state()
+    manager = seeded[StateKeys.DATA_MANAGER]
+    assert isinstance(manager, DataManager)
+
+    def failing_scale(*args, **kwargs):
+        raise ValidationError("Forced scaling error")
+
+    monkeypatch.setattr(manager, "scale_features", failing_scale)
+
+    app = _on_page(PAGE_KEYS[0], seeded)
+    btn = next((b for b in app.button if b.label == "Split Dataset"), None)
+    assert btn is not None
+
+    app = btn.click().run()
+    # Splits were cleared
+    assert manager.X_train is None
+    assert manager.X_val is None
+    assert manager.X_test is None
+    assert app.session_state[StateKeys.DATA_PREPARED] is False
 

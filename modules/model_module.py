@@ -15,7 +15,6 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
@@ -25,7 +24,6 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
 )
-from sklearn.pipeline import Pipeline
 from xgboost import XGBClassifier
 
 from core.config import get_config
@@ -33,6 +31,7 @@ from core.errors import (
     FrameworkError,
     ModelNotTrainedError,
     ModelPredictionError,
+    ModelTrainingError,
     UnknownModelError,
     ValidationError,
 )
@@ -83,18 +82,10 @@ class ModelTrainer:
             Model instance
         """
         if model_name == "Logistic Regression":
-            return Pipeline(
-                [
-                    ("imputer", SimpleImputer(strategy="mean")),
-                    (
-                        "classifier",
-                        LogisticRegression(
-                            max_iter=params.get("max_iter", 1000),
-                            C=params.get("C", 1.0),
-                            random_state=params.get("random_state", 42),
-                        ),
-                    ),
-                ]
+            return LogisticRegression(
+                max_iter=params.get("max_iter", 1000),
+                C=params.get("C", 1.0),
+                random_state=params.get("random_state", 42),
             )
         elif model_name == "Random Forest":
             return RandomForestClassifier(
@@ -135,9 +126,141 @@ class ModelTrainer:
 
         Returns:
             Trained model
+
+        Raises:
+            UnknownModelError: If model_name is not recognised.
+            ValidationError: If X_train contains non-numeric columns, or if
+                X_train/y_train contain missing (NaN) or non-finite (inf) values.
+            ModelTrainingError: If the estimator raises an exception during fit.
         """
+        # Validate that X_train and y_train do not contain NaN, non-numeric, or infinite values
+        if isinstance(X_train, (pd.DataFrame, pd.Series)):
+            has_nan = bool(
+                X_train.isnull().any().any()
+                if isinstance(X_train, pd.DataFrame)
+                else X_train.isnull().any()
+            )
+            if has_nan:
+                nan_cols = (
+                    [str(c) for c in X_train.columns if X_train[c].isnull().any()]
+                    if isinstance(X_train, pd.DataFrame)
+                    else ["X_train"]
+                )
+                raise ValidationError(
+                    f"X_train contains missing values (NaN) in columns: {nan_cols}. "
+                    "Clean missing values before training.",
+                    field="X_train",
+                    value=nan_cols,
+                    context={"nan_columns": nan_cols},
+                )
+            if isinstance(X_train, pd.DataFrame):
+                non_numeric_cols = [
+                    str(c) for c in X_train.columns if not pd.api.types.is_numeric_dtype(X_train[c])
+                ]
+                if non_numeric_cols:
+                    raise ValidationError(
+                        f"X_train contains non-numeric columns: {non_numeric_cols}. "
+                        "Encode or drop categorical features before training.",
+                        field="X_train",
+                        value=non_numeric_cols,
+                        context={"non_numeric_columns": non_numeric_cols},
+                    )
+                inf_cols = [str(c) for c in X_train.columns if np.isinf(X_train[c]).any()]
+                if inf_cols:
+                    raise ValidationError(
+                        f"X_train contains non-finite values (inf) in columns: {inf_cols}. "
+                        "Ensure all values are finite before training.",
+                        field="X_train",
+                        value=inf_cols,
+                        context={"inf_columns": inf_cols},
+                    )
+            else:
+                if not pd.api.types.is_numeric_dtype(X_train):
+                    raise ValidationError(
+                        f"X_train is non-numeric (dtype {X_train.dtype}). "
+                        "Encode or drop categorical features before training.",
+                        field="X_train",
+                        value=str(X_train.dtype),
+                        context={"dtype": str(X_train.dtype)},
+                    )
+                if np.isinf(X_train).any():
+                    raise ValidationError(
+                        "X_train contains non-finite values (inf). Ensure all values are finite before training.",
+                        field="X_train",
+                    )
+        elif isinstance(X_train, np.ndarray):
+            if np.issubdtype(X_train.dtype, np.number):
+                if np.isnan(X_train).any():
+                    raise ValidationError(
+                        "X_train contains missing values (NaN). Clean missing values before training.",
+                        field="X_train",
+                    )
+                if np.isinf(X_train).any():
+                    raise ValidationError(
+                        "X_train contains non-finite values (inf). Ensure all values are finite before training.",
+                        field="X_train",
+                    )
+            else:
+                if pd.isna(X_train).any():
+                    raise ValidationError(
+                        "X_train contains missing values (NaN). Clean missing values before training.",
+                        field="X_train",
+                    )
+                raise ValidationError(
+                    f"X_train is non-numeric (dtype {X_train.dtype}). "
+                    "Encode or drop categorical features before training.",
+                    field="X_train",
+                    value=str(X_train.dtype),
+                    context={"dtype": str(X_train.dtype)},
+                )
+
+        if isinstance(y_train, (pd.Series, pd.DataFrame)):
+            has_nan_y = bool(
+                y_train.isnull().any().any()
+                if isinstance(y_train, pd.DataFrame)
+                else y_train.isnull().any()
+            )
+            if has_nan_y:
+                raise ValidationError(
+                    "y_train contains missing values (NaN). Clean or drop missing target values before training.",
+                    field="y_train",
+                )
+            target_series = y_train.iloc[:, 0] if isinstance(y_train, pd.DataFrame) else y_train
+            if pd.api.types.is_numeric_dtype(target_series):
+                if np.isinf(target_series).any():
+                    raise ValidationError(
+                        "y_train contains non-finite values (inf). Ensure all target values are finite before training.",
+                        field="y_train",
+                    )
+        elif isinstance(y_train, np.ndarray):
+            if np.issubdtype(y_train.dtype, np.number):
+                if np.isnan(y_train).any():
+                    raise ValidationError(
+                        "y_train contains missing values (NaN). Clean target before training.",
+                        field="y_train",
+                    )
+                if np.isinf(y_train).any():
+                    raise ValidationError(
+                        "y_train contains non-finite values (inf). Ensure all target values are finite before training.",
+                        field="y_train",
+                    )
+            else:
+                if pd.isna(y_train).any():
+                    raise ValidationError(
+                        "y_train contains missing values (NaN). Clean target before training.",
+                        field="y_train",
+                    )
+
         model = self.get_model(model_name, **params)
-        model.fit(X_train, y_train)
+        try:
+            model.fit(X_train, y_train)
+        except FrameworkError:
+            raise
+        except Exception as exc:
+            raise ModelTrainingError(
+                f"Model training failed for '{model_name}': {exc}",
+                context={"model_name": model_name, "error": str(exc)},
+            ) from exc
         self.trained_models[model_name] = model
         return model
 
